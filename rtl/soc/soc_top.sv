@@ -1,0 +1,613 @@
+// =============================================================================
+// soc_top.sv
+// Top-level SoC wrapper
+// Core:       Ibex RV32IMC, no ICache, no SecureIbex, no PMP
+// Boot addr:  0x0000_0000 (BootROM)
+// Reset:      Active-low, synchronous
+// Clock:      Single domain — PLL/clock gen to be added later
+// =============================================================================
+
+`include "obi/typedef.svh"
+`include "obi/assign.svh"
+
+module soc_top (
+  // Clock and reset — raw pins for now, PLL stub to be added
+  input  logic clk_i,
+  input  logic rst_ni,
+
+  // QSPI — external flash
+  output logic       qspi_csn_o,
+  output logic       qspi_clk_o,
+  inout  logic [3:0] qspi_io_io,   // IO0-IO3 bidirectional
+
+  // SPI
+  output logic spi_csn_o,
+  output logic spi_clk_o,
+  output logic spi_mosi_o,
+  input  logic spi_miso_i,
+
+  // UART
+  output logic uart_tx_o,
+  input  logic uart_rx_i,
+
+  // GPIO — 32 pins bidirectional
+  inout  logic [31:0] gpio_io,
+
+  // JTAG debug
+  input  logic jtag_tck_i,
+  input  logic jtag_tms_i,
+  input  logic jtag_tdi_i,
+  output logic jtag_tdo_o,
+  input  logic jtag_trst_ni
+);
+
+  // ---------------------------------------------------------------------------
+  // Local parameters
+  // ---------------------------------------------------------------------------
+  localparam logic [31:0] BOOT_ADDR  = 32'h0000_0000;
+  localparam logic [31:0] HART_ID    = 32'h0000_0000;
+
+  // Memory sizes (parameterised — change here to resize)
+  localparam int unsigned BOOTROM_SIZE_WORDS = 1024; // 4KB
+  localparam int unsigned ISRAM_SIZE_WORDS   = 1024; // 4KB
+  localparam int unsigned DSRAM_SIZE_WORDS   = 1024; // 4KB
+
+  // ---------------------------------------------------------------------------
+  // Ibex ↔ decoder flat signals
+  // ---------------------------------------------------------------------------
+
+  // Instruction interface
+  logic        instr_req;
+  logic        instr_gnt;
+  logic        instr_rvalid;
+  logic [31:0] instr_addr;
+  logic [31:0] instr_rdata;
+  logic [ 6:0] instr_rdata_intg; // tied 0 — no ECC
+  logic        instr_err;
+
+  // Data interface
+  logic        data_req;
+  logic        data_gnt;
+  logic        data_rvalid;
+  logic        data_we;
+  logic [ 3:0] data_be;
+  logic [31:0] data_addr;
+  logic [31:0] data_wdata;
+  logic [ 6:0] data_wdata_intg; // tied 0 — no ECC
+  logic [31:0] data_rdata;
+  logic [ 6:0] data_rdata_intg; // tied 0
+  logic        data_err;
+
+  // Interrupt signals
+  logic        irq_software;
+  logic        irq_timer;
+  logic        irq_external;
+  logic        irq_nm;
+
+  // Debug — stubbed until riscv_dbg is integrated
+  logic        debug_req;
+
+  // ---------------------------------------------------------------------------
+  // Decoder ↔ slave flat signals
+  // ---------------------------------------------------------------------------
+
+  // BootROM
+  logic        bootrom_req;
+  logic        bootrom_gnt;
+  logic        bootrom_rvalid;
+  logic [31:0] bootrom_addr;
+  logic        bootrom_we;
+  logic [ 3:0] bootrom_be;
+  logic [31:0] bootrom_wdata;
+  logic [31:0] bootrom_rdata;
+  logic        bootrom_err;
+
+  // ISRAM
+  logic        isram_req;
+  logic        isram_gnt;
+  logic        isram_rvalid;
+  logic [31:0] isram_addr;
+  logic        isram_we;
+  logic [ 3:0] isram_be;
+  logic [31:0] isram_wdata;
+  logic [31:0] isram_rdata;
+  logic        isram_err;
+
+  // DSRAM
+  logic        dsram_req;
+  logic        dsram_gnt;
+  logic        dsram_rvalid;
+  logic [31:0] dsram_addr;
+  logic        dsram_we;
+  logic [ 3:0] dsram_be;
+  logic [31:0] dsram_wdata;
+  logic [31:0] dsram_rdata;
+  logic        dsram_err;
+
+  // Control registers
+  logic        ctrl_req;
+  logic        ctrl_gnt;
+  logic        ctrl_rvalid;
+  logic [31:0] ctrl_addr;
+  logic        ctrl_we;
+  logic [ 3:0] ctrl_be;
+  logic [31:0] ctrl_wdata;
+  logic [31:0] ctrl_rdata;
+  logic        ctrl_err;
+
+  // Buffer CSR
+  logic        buf_req;
+  logic        buf_gnt;
+  logic        buf_rvalid;
+  logic [31:0] buf_addr;
+  logic        buf_we;
+  logic [ 3:0] buf_be;
+  logic [31:0] buf_wdata;
+  logic [31:0] buf_rdata;
+  logic        buf_err;
+
+  // SHA + ED25519 CSR
+  logic        sha_req;
+  logic        sha_gnt;
+  logic        sha_rvalid;
+  logic [31:0] sha_addr;
+  logic        sha_we;
+  logic [ 3:0] sha_be;
+  logic [31:0] sha_wdata;
+  logic [31:0] sha_rdata;
+  logic        sha_err;
+  //interconnect
+  logic [31:0] accel_data;
+  logic [ 5:0] accel_addr;
+  logic        accel_valid;
+
+  logic        sha_verify_done;
+  logic        sha_signature_valid;
+  logic        sha_start;
+
+  // APB bridge OBI side
+  logic        apb_bridge_req;
+  logic        apb_bridge_gnt;
+  logic        apb_bridge_rvalid;
+  logic [31:0] apb_bridge_addr;
+  logic        apb_bridge_we;
+  logic [ 3:0] apb_bridge_be;
+  logic [31:0] apb_bridge_wdata;
+  logic [31:0] apb_bridge_rdata;
+  logic        apb_bridge_err;
+
+  // ISRAM write lock from control registers
+  logic        ctrl_isram_lock;
+
+  // ---------------------------------------------------------------------------
+  // IRQ lines from peripherals to PLIC
+  // (PLIC → irq_external, CLINT → irq_timer + irq_software)
+  // Peripheral IRQ lines — to be connected when PLIC is instantiated
+  // ---------------------------------------------------------------------------
+  logic        irq_uart;
+  logic        irq_spi;
+  logic        irq_qspi;
+  logic        irq_gpio;
+  logic        irq_timer_periph;
+  logic        irq_buf;          // buffer full / stream done
+  logic        irq_sha;          // crypto done / error
+
+  // ---------------------------------------------------------------------------
+  // Tie-offs for unused Ibex inputs
+  // ---------------------------------------------------------------------------
+  assign instr_rdata_intg = 7'h0;
+  assign data_rdata_intg  = 7'h0;
+  assign irq_nm           = 1'b0;
+  assign debug_req        = 1'b0; // TODO: connect riscv_dbg
+
+  // ---------------------------------------------------------------------------
+  // Ibex RV32IMC instantiation
+  // ---------------------------------------------------------------------------
+  ibex_top #(
+    .PMPEnable        ( 1'b0          ),
+    .RV32E            ( 1'b0          ),
+    .RV32M            ( ibex_pkg::RV32MFast ),
+    .RV32B            ( ibex_pkg::RV32BNone ),
+    .RegFile          ( ibex_pkg::RegFileFF ),
+    .BranchTargetALU  ( 1'b0          ),
+    .WritebackStage   ( 1'b0          ),
+    .ICache           ( 1'b0          ),
+    .BranchPredictor  ( 1'b0          ),
+    .DbgTriggerEn     ( 1'b0          ),
+    .SecureIbex       ( 1'b0          ),
+    .DmHaltAddr       ( 32'h1A110800  ), // standard DM halt addr — update with riscv_dbg base
+    .DmExceptionAddr  ( 32'h1A110808  )
+  ) u_ibex_top (
+    .clk_i                      ( clk_i            ),
+    .rst_ni                     ( rst_ni            ),
+
+    .test_en_i                  ( 1'b0              ),
+    .ram_cfg_icache_tag_i       ( '0                ),
+    .ram_cfg_icache_data_i      ( '0                ),
+    .ram_cfg_rsp_icache_tag_o   (                   ),
+    .ram_cfg_rsp_icache_data_o  (                   ),
+
+    .hart_id_i                  ( HART_ID           ),
+    .boot_addr_i                ( BOOT_ADDR         ),
+
+    // Instruction interface
+    .instr_req_o                ( instr_req         ),
+    .instr_gnt_i                ( instr_gnt         ),
+    .instr_rvalid_i             ( instr_rvalid      ),
+    .instr_addr_o               ( instr_addr        ),
+    .instr_rdata_i              ( instr_rdata       ),
+    .instr_rdata_intg_i         ( instr_rdata_intg  ),
+    .instr_err_i                ( instr_err         ),
+
+    // Data interface
+    .data_req_o                 ( data_req          ),
+    .data_gnt_i                 ( data_gnt          ),
+    .data_rvalid_i              ( data_rvalid       ),
+    .data_we_o                  ( data_we           ),
+    .data_be_o                  ( data_be           ),
+    .data_addr_o                ( data_addr         ),
+    .data_wdata_o               ( data_wdata        ),
+    .data_wdata_intg_o          ( data_wdata_intg   ),
+    .data_rdata_i               ( data_rdata        ),
+    .data_rdata_intg_i          ( data_rdata_intg   ),
+    .data_err_i                 ( data_err          ),
+
+    // Interrupts
+    .irq_software_i             ( irq_software      ),
+    .irq_timer_i                ( irq_timer         ),
+    .irq_external_i             ( irq_external      ),
+    .irq_fast_i                 ( 15'h0             ),
+    .irq_nm_i                   ( irq_nm            ),
+
+    // Scrambling — unused
+    .scramble_key_valid_i       ( 1'b0              ),
+    .scramble_key_i             ( '0                ),
+    .scramble_nonce_i           ( '0                ),
+    .scramble_req_o             (                   ),
+
+    // Debug
+    .debug_req_i                ( debug_req         ),
+    .crash_dump_o               (                   ),
+    .double_fault_seen_o        (                   ),
+
+    // CPU control
+    .fetch_enable_i             ( ibex_pkg::IbexMuBiOn ),
+    .alert_minor_o              (                   ),
+    .alert_major_internal_o     (                   ),
+    .alert_major_bus_o          (                   ),
+    .core_sleep_o               (                   ),
+
+    // DFT
+    .scan_rst_ni                ( 1'b1              ),
+
+    // Lockstep — disabled
+    .lockstep_cmp_en_o          (                   ),
+    .data_req_shadow_o          (                   ),
+    .data_we_shadow_o           (                   ),
+    .data_be_shadow_o           (                   ),
+    .data_addr_shadow_o         (                   ),
+    .data_wdata_shadow_o        (                   ),
+    .data_wdata_intg_shadow_o   (                   ),
+    .instr_req_shadow_o         (                   ),
+    .instr_addr_shadow_o        (                   )
+  );
+
+  // ---------------------------------------------------------------------------
+  // Address decoder + fetch demux
+  // ---------------------------------------------------------------------------
+  soc_addr_decode u_addr_decode (
+    .clk_i              ( clk_i              ),
+    .rst_ni             ( rst_ni             ),
+
+    // Ibex instruction fetch
+    .instr_req_i        ( instr_req          ),
+    .instr_gnt_o        ( instr_gnt          ),
+    .instr_rvalid_o     ( instr_rvalid       ),
+    .instr_addr_i       ( instr_addr         ),
+    .instr_rdata_o      ( instr_rdata        ),
+    .instr_err_o        ( instr_err          ),
+
+    // Ibex data
+    .data_req_i         ( data_req           ),
+    .data_gnt_o         ( data_gnt           ),
+    .data_rvalid_o      ( data_rvalid        ),
+    .data_we_i          ( data_we            ),
+    .data_be_i          ( data_be            ),
+    .data_addr_i        ( data_addr          ),
+    .data_wdata_i       ( data_wdata         ),
+    .data_rdata_o       ( data_rdata         ),
+    .data_err_o         ( data_err           ),
+
+    // ISRAM lock
+    .ctrl_isram_lock_i  ( ctrl_isram_lock    ),
+
+    // Slaves
+    .bootrom_req_o      ( bootrom_req        ),
+    .bootrom_gnt_i      ( bootrom_gnt        ),
+    .bootrom_rvalid_i   ( bootrom_rvalid     ),
+    .bootrom_addr_o     ( bootrom_addr       ),
+    .bootrom_we_o       ( bootrom_we         ),
+    .bootrom_be_o       ( bootrom_be         ),
+    .bootrom_wdata_o    ( bootrom_wdata      ),
+    .bootrom_rdata_i    ( bootrom_rdata      ),
+    .bootrom_err_i      ( bootrom_err        ),
+
+    .isram_req_o        ( isram_req          ),
+    .isram_gnt_i        ( isram_gnt          ),
+    .isram_rvalid_i     ( isram_rvalid       ),
+    .isram_addr_o       ( isram_addr         ),
+    .isram_we_o         ( isram_we           ),
+    .isram_be_o         ( isram_be           ),
+    .isram_wdata_o      ( isram_wdata        ),
+    .isram_rdata_i      ( isram_rdata        ),
+    .isram_err_i        ( isram_err          ),
+
+    .dsram_req_o        ( dsram_req          ),
+    .dsram_gnt_i        ( dsram_gnt          ),
+    .dsram_rvalid_i     ( dsram_rvalid       ),
+    .dsram_addr_o       ( dsram_addr         ),
+    .dsram_we_o         ( dsram_we           ),
+    .dsram_be_o         ( dsram_be           ),
+    .dsram_wdata_o      ( dsram_wdata        ),
+    .dsram_rdata_i      ( dsram_rdata        ),
+    .dsram_err_i        ( dsram_err          ),
+
+    .ctrl_req_o         ( ctrl_req           ),
+    .ctrl_gnt_i         ( ctrl_gnt           ),
+    .ctrl_rvalid_i      ( ctrl_rvalid        ),
+    .ctrl_addr_o        ( ctrl_addr          ),
+    .ctrl_we_o          ( ctrl_we            ),
+    .ctrl_be_o          ( ctrl_be            ),
+    .ctrl_wdata_o       ( ctrl_wdata         ),
+    .ctrl_rdata_i       ( ctrl_rdata         ),
+    .ctrl_err_i         ( ctrl_err           ),
+
+    .buf_req_o          ( buf_req            ),
+    .buf_gnt_i          ( buf_gnt            ),
+    .buf_rvalid_i       ( buf_rvalid         ),
+    .buf_addr_o         ( buf_addr           ),
+    .buf_we_o           ( buf_we             ),
+    .buf_be_o           ( buf_be             ),
+    .buf_wdata_o        ( buf_wdata          ),
+    .buf_rdata_i        ( buf_rdata          ),
+    .buf_err_i          ( buf_err            ),
+
+    .sha_req_o          ( sha_req            ),
+    .sha_gnt_i          ( sha_gnt            ),
+    .sha_rvalid_i       ( sha_rvalid         ),
+    .sha_addr_o         ( sha_addr           ),
+    .sha_we_o           ( sha_we             ),
+    .sha_be_o           ( sha_be             ),
+    .sha_wdata_o        ( sha_wdata          ),
+    .sha_rdata_i        ( sha_rdata          ),
+    .sha_err_i          ( sha_err            ),
+
+    .apb_req_o          ( apb_bridge_req     ),
+    .apb_gnt_i          ( apb_bridge_gnt     ),
+    .apb_rvalid_i       ( apb_bridge_rvalid  ),
+    .apb_addr_o         ( apb_bridge_addr    ),
+    .apb_we_o           ( apb_bridge_we      ),
+    .apb_be_o           ( apb_bridge_be      ),
+    .apb_wdata_o        ( apb_bridge_wdata   ),
+    .apb_rdata_i        ( apb_bridge_rdata   ),
+    .apb_err_i          ( apb_bridge_err     )
+  );
+
+  // ---------------------------------------------------------------------------
+  // BootROM — read-only, initialised from bootrom.hex at synthesis
+  // ---------------------------------------------------------------------------
+  // TODO: replace with foundry SRAM macro when available
+  soc_bootrom #(
+    .NumWords ( BOOTROM_SIZE_WORDS )
+  ) u_bootrom (
+    .clk_i    ( clk_i         ),
+    .rst_ni   ( rst_ni        ),
+    .req_i    ( bootrom_req   ),
+    .addr_i   ( bootrom_addr  ),
+    .rdata_o  ( bootrom_rdata ),
+    .rvalid_o ( bootrom_rvalid),
+    .gnt_o    ( bootrom_gnt   ),
+    .err_o    ( bootrom_err   )
+  );
+
+  // BootROM is read-only — write signals intentionally unconnected
+  // bootrom_we and bootrom_wdata are decoder outputs that go nowhere here
+
+  // ---------------------------------------------------------------------------
+  // ISRAM — instruction SRAM, write port gated by decoder
+  // ---------------------------------------------------------------------------
+  // TODO: replace with foundry SRAM macro when available
+  soc_sram #(
+    .NumWords  ( ISRAM_SIZE_WORDS )
+  ) u_isram (
+    .clk_i    ( clk_i        ),
+    .rst_ni   ( rst_ni       ),
+    .req_i    ( isram_req    ),
+    .we_i     ( isram_we     ),
+    .be_i     ( isram_be     ),
+    .addr_i   ( isram_addr   ),
+    .wdata_i  ( isram_wdata  ),
+    .rdata_o  ( isram_rdata  ),
+    .rvalid_o ( isram_rvalid ),
+    .gnt_o    ( isram_gnt    ),
+    .err_o    ( isram_err    )
+  );
+
+  // ---------------------------------------------------------------------------
+  // DSRAM — data SRAM
+  // ---------------------------------------------------------------------------
+  // TODO: replace with foundry SRAM macro when available
+  soc_sram #(
+    .NumWords  ( DSRAM_SIZE_WORDS )
+  ) u_dsram (
+    .clk_i    ( clk_i        ),
+    .rst_ni   ( rst_ni       ),
+    .req_i    ( dsram_req    ),
+    .we_i     ( dsram_we     ),
+    .be_i     ( dsram_be     ),
+    .addr_i   ( dsram_addr   ),
+    .wdata_i  ( dsram_wdata  ),
+    .rdata_o  ( dsram_rdata  ),
+    .rvalid_o ( dsram_rvalid ),
+    .gnt_o    ( dsram_gnt    ),
+    .err_o    ( dsram_err    )
+  );
+
+  // ---------------------------------------------------------------------------
+  // Control Registers block
+  // ---------------------------------------------------------------------------
+  soc_ctrl_regs u_ctrl_regs (
+    .clk_i          ( clk_i           ),
+    .rst_ni         ( rst_ni          ),
+
+    // OBI slave port
+    .req_i          ( ctrl_req        ),
+    .we_i           ( ctrl_we         ),
+    .be_i           ( ctrl_be         ),
+    .addr_i         ( ctrl_addr       ),
+    .wdata_i        ( ctrl_wdata      ),
+    .gnt_o          ( ctrl_gnt        ),
+    .rvalid_o       ( ctrl_rvalid     ),
+    .rdata_o        ( ctrl_rdata      ),
+    .err_o          ( ctrl_err        ),
+    .crypto_verified_i ( sha_signature_valid ),
+    // Control outputs
+    .isram_lock_o   ( ctrl_isram_lock )
+  );
+
+  // ---------------------------------------------------------------------------
+  // Buffer block (OBI slave + AXI-Stream master)
+  // ---------------------------------------------------------------------------
+  soc_buffer u_buffer (
+    .clk_i          ( clk_i       ),
+    .rst_ni         ( rst_ni      ),
+
+    // OBI slave — CSR + data write port
+    .req_i          ( buf_req     ),
+    .we_i           ( buf_we      ),
+    .be_i           ( buf_be      ),
+    .addr_i         ( buf_addr    ),
+    .wdata_i        ( buf_wdata   ),
+    .gnt_o          ( buf_gnt     ),
+    .rvalid_o       ( buf_rvalid  ),
+    .rdata_o        ( buf_rdata   ),
+    .err_o          ( buf_err     ),
+
+    .accel_data_o  ( accel_data        ),
+    .accel_addr_o  ( accel_addr        ),
+    .accel_valid_o ( accel_valid       ),
+    .accel_data_i  ( 32'h0             ),
+    .accel_done_i  ( sha_verify_done   ),
+    // IRQ → PLIC
+    .irq_o          ( irq_buf     )
+  );
+
+  top_most u_crypto (
+    .clk(clk_i),
+    .rst_n(rst_ni),
+    .accel_data_i(accel_data),
+    .accel_addr_i(accel_addr),
+    .accel_valid_i(accel_valid),
+    .start_verify_i(sha_start),
+    .verify_done_o(sha_verify_done),
+    .signature_valid(sha_signature_valid)
+);
+
+sha_ed25519_obi_wrapper u_sha_ctrl (
+
+    .clk_i              ( clk_i                ),
+    .rst_ni             ( rst_ni               ),
+    // OBI slave interface
+    .req_i              ( sha_req              ),
+    .we_i               ( sha_we               ),
+    .be_i               ( sha_be               ),
+    .addr_i             ( sha_addr             ),
+    .wdata_i            ( sha_wdata            ),
+    .gnt_o              ( sha_gnt              ),
+    .rvalid_o           ( sha_rvalid           ),
+    .rdata_o            ( sha_rdata            ),
+    .err_o              ( sha_err              ),
+    // Crypto control/status
+    .start_verify_o     ( sha_start            ),
+    .verify_done_i      ( sha_verify_done      ),
+    .signature_valid_i  ( sha_signature_valid  )
+
+);
+  // ---------------------------------------------------------------------------
+  // SHA + ED25519 CSR stub
+  // ---------------------------------------------------------------------------
+  // TODO: connect to actual SHA+ED25519 OBI CSR wrapper (your friend's module)
+
+  // ---------------------------------------------------------------------------
+  // OBI → APB bridge
+  // ---------------------------------------------------------------------------
+  // TODO: instantiate obi_to_apb here with correct apb_req_t / apb_rsp_t types
+  // and connect to APB peripheral mux below
+  // Stubbed for now — returns error on all accesses
+  assign apb_bridge_gnt    = apb_bridge_req;
+  assign apb_bridge_rdata  = 32'hDEAD_BEEF;
+  assign apb_bridge_err    = 1'b1;
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) apb_bridge_rvalid <= 1'b0;
+    else         apb_bridge_rvalid <= apb_bridge_req & apb_bridge_gnt;
+  end
+
+  // ---------------------------------------------------------------------------
+  // APB peripheral stubs
+  // TODO: replace each with actual CrocSoC IP instantiation
+  // ---------------------------------------------------------------------------
+
+  // UART
+  // u_apb_uart : apb_uart #(...) (...)
+  assign uart_tx_o   = 1'b1; // idle
+  assign irq_uart    = 1'b0;
+
+  // SPI
+  // u_apb_spi : apb_spi_master #(...) (...)
+  assign spi_csn_o   = 1'b1;
+  assign spi_clk_o   = 1'b0;
+  assign spi_mosi_o  = 1'b0;
+  assign irq_spi     = 1'b0;
+
+  // QSPI
+  // u_apb_qspi : apb_spi_master #(...) (...)
+  assign qspi_csn_o  = 1'b1;
+  assign qspi_clk_o  = 1'b0;
+  assign irq_qspi    = 1'b0;
+
+  // GPIO
+  // u_gpio : gpio #(...) (...)
+  assign irq_gpio    = 1'b0;
+
+  // Timer
+  // u_apb_timer : apb_timer #(...) (...)
+  assign irq_timer_periph = 1'b0;
+
+  // ---------------------------------------------------------------------------
+  // PLIC stub
+  // TODO: instantiate rv_plic and connect all irq_* lines
+  // PLIC output → irq_external (Ibex external interrupt pin)
+  // ---------------------------------------------------------------------------
+  assign irq_external = irq_uart | irq_spi | irq_qspi |
+                        irq_gpio | irq_timer_periph   |
+                        irq_buf  | irq_sha;
+  // ^^^ Temporary OR — replace with proper PLIC priority arbitration
+
+  // ---------------------------------------------------------------------------
+  // CLINT stub
+  // TODO: instantiate CLINT and connect mtime/mtimecmp registers
+  // CLINT outputs → irq_timer, irq_software
+  // ---------------------------------------------------------------------------
+  assign irq_timer    = 1'b0;
+  assign irq_software = 1'b0;
+
+  // ---------------------------------------------------------------------------
+  // JTAG debug stub
+  // TODO: instantiate riscv_dbg and connect to:
+  //   - jtag_tck_i, jtag_tms_i, jtag_tdi_i, jtag_tdo_o, jtag_trst_ni
+  //   - Ibex debug_req_i
+  //   - dm_* OBI/memory interface for debug module access
+  // ---------------------------------------------------------------------------
+  assign jtag_tdo_o = 1'b0;
+
+endmodule

@@ -1,0 +1,15 @@
+[submodule "rtl/core/ibex_core"]
+	path = rtl/core/ibex_core
+	url = https://github.com/lowRISC/ibex.git
+[submodule "rtl/bus/pulp_axi"]
+	path = rtl/bus/pulp_axi
+	url = https://github.com/pulp-platform/axi.git
+[submodule "rtl/peripheral/apb_spi_master"]
+	path = rtl/peripheral/apb_spi_master
+	url = https://github.com/pulp-platform/apb_spi_master.git
+[submodule "rtl/peripheral/axi_spi_master"]
+	path = rtl/peripheral/axi_spi_master
+	url = https://github.com/pulp-platform/axi_spi_master.git
+[submodule "rtl/crypto/ed25519"]
+	path = rtl/crypto/ed25519
+	url = https://github.com/VibhuKavBhat/ED25519-ASIC-Implementation.git
