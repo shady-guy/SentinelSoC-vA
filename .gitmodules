@@ -10,6 +10,3 @@
 [submodule "rtl/peripheral/apb_uart"]
 	path = rtl/peripheral/apb_uart
 	url = https://github.com/pulp-platform/apb_uart_sv.git
-[submodule "rtl/bus/obi"]
-	path = rtl/bus/obi
-	url = https://github.com/pulp-platform/obi.git
