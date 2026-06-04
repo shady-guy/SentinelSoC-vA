@@ -281,7 +281,7 @@ typedef struct packed {
     .RV32B            ( ibex_pkg::RV32BNone ),
     .RegFile          ( ibex_pkg::RegFileFF ),
     .BranchTargetALU  ( 1'b0          ),
-    .WritebackStage   ( 1'b0          ),
+    .WritebackStage   ( 1'b1          ),
     .ICache           ( 1'b0          ),
     .BranchPredictor  ( 1'b0          ),
     .DbgTriggerEn     ( 1'b0          ),
