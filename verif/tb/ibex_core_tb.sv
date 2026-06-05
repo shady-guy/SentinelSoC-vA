@@ -289,8 +289,15 @@ module ibex_core_tb;
     for (int i = 0; i < DMEM_DEPTH; i++) tag_mem[i]  = 1'b0;
     for (int i = 0; i < 32;         i++) reg_file[i] = 32'h0;
     repeat(3) @(posedge clk);
+    init_tag_rf();
     rst_n = 1;
     @(posedge clk);
+  endtask
+
+  task automatic init_tag_rf();
+    for (int i = 0; i < 32; i++) begin
+      $deposit(dut.tag_register_file_i.mem[i], 1'b0);
+    end
   endtask
 
   // =========================================================================
