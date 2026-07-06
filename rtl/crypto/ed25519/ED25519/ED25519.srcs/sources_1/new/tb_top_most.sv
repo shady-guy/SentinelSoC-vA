@@ -28,8 +28,12 @@ module tb_top_most;
     end
 
     // Registered Output
-    always_ff @(posedge clk)
-        otp_data <= (boot_active && otp_rd_en) ? otp_mem[otp_addr] : 32'h0;
+    always_ff @(posedge clk) begin
+        if (otp_rd_en)
+            otp_data <= otp_mem[otp_addr];
+        else
+            otp_data <= 32'h0;
+    end
 
     top_most dut (
         .clk(clk), .rst_n(rst_n),
