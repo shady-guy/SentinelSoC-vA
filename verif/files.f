@@ -6,7 +6,7 @@
 +incdir+.bender/git/checkouts/apb-1b178314edfb6925/include
 +incdir+.bender/git/checkouts/obi-75858655e8b256db/include
 
-rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/sha512_pkg.sv
+rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/SHA/sha512_pkg.sv
 rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/ALU/pseudo_mersenne.sv
 rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/ALU/multiplier.sv
 rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/ALU/alu.sv
