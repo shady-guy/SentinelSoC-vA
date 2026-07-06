@@ -130,7 +130,8 @@ module top_most (
 
     logic start_latch, boot_q;
 
-    assign boot_active_o = boot_q;
+    // FIXED: Combinational drop for instant deassertion
+    assign boot_active_o = boot_q & ~ed_done; 
     assign otp_addr_o    = otp_idx;
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -176,7 +177,7 @@ module top_most (
                     end
                 end
 
-                // Construct S Register (MSB First)
+                // Construct S Register (Right Shift for Little-Endian)
                 ST_RECV_S: begin
                     if (!fifo_empty) begin
                         s_reg <= {fifo_dout, s_reg[255:32]}; 
@@ -206,7 +207,7 @@ module top_most (
                     state       <= ST_OTP_LATCH;
                 end
                 ST_OTP_LATCH: begin
-                    pubkey_reg <= {otp_data_i, pubkey_reg[255:32]};
+                    pubkey_reg <= {otp_data_i, pubkey_reg[255:32]}; 
                     sha_addr   <= 6'(blk_ptr);
                     sha_wdata  <= otp_data_i;
                     sha_wen    <= 1;
@@ -269,9 +270,9 @@ module top_most (
                     end
                 end
 
-                // Extract 512-bit Hash (MSB First)
+                // Extract 512-bit Hash (Right Shift + Byte Swap to map SHA's Big-Endian output to Ed25519's Little-Endian format)
                 ST_READ_HASH: begin
-                    hash_reg <= {sha_rdata, hash_reg[511:32]};
+                    hash_reg <= {sha_rdata[7:0], sha_rdata[15:8], sha_rdata[23:16], sha_rdata[31:24], hash_reg[511:32]}; 
                     hash_idx <= hash_idx + 1;
                     if (hash_idx == 14) begin
                         sha_addr <= 6'h31;
@@ -281,7 +282,7 @@ module top_most (
                     end
                 end
                 ST_READ_HASH_LAST: begin
-                    hash_reg <= {sha_rdata, hash_reg[511:32]};
+                    hash_reg <= {sha_rdata[7:0], sha_rdata[15:8], sha_rdata[23:16], sha_rdata[31:24], hash_reg[511:32]};
                     load_idx <= 0;
                     state    <= ST_LOAD_REGS;
                 end
