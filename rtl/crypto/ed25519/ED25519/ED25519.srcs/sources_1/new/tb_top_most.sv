@@ -1,23 +1,5 @@
-// tb_top_most.sv
-// Tests top_most orchestration:
-//   1. SHA length and init written correctly on word 0
-//   2. S words assembled into s_reg (checked via SHA addr not used for S)
-//   3. R words fed to SHA addresses 0-7
-//   4. OTP read triggered after word 16, 8 sequential reads
-//   5. Pubkey words fed to SHA addresses 8-15
-//   6. Staging buffer: message words arriving during OTP read are not lost
-//   7. boot_active deasserts after verify_done (mocked)
-//   8. start_latch: start_verify before load done is applied after load
-
-// NOTE: sha512_top and top_ed25519 are instantiated as real black boxes.
-// We cannot easily check internal register values, so we check:
-//   - OTP address/enable sequencing
-//   - boot_active behavior
-//   - start_verify latch behavior
-//   - Module does not stall (reaches ST_WAIT_START in bounded time)
-
 `timescale 1ns/1ps
-module tb_top_most;
+module tb_top_most_func;
 
     logic        clk=0, rst_n=0;
     logic [31:0] stream_data;
@@ -31,8 +13,22 @@ module tb_top_most;
 
     always #5 clk = ~clk;
 
-    // OTP model: returns word index as data, responds only when boot_active
-    assign otp_data = boot_active ? {29'd0, otp_addr} : 32'h0;
+    // OTP model — holds real pubkey, responds only when boot_active
+    logic [31:0] otp_mem [0:7];
+    initial begin
+        otp_mem[0] = 32'h65aca07e;
+        otp_mem[1] = 32'hdafd4c58;
+        otp_mem[2] = 32'had156f5a;
+        otp_mem[3] = 32'hb8c47add;
+        otp_mem[4] = 32'h5f1a6036;
+        otp_mem[5] = 32'h339133e1;
+        otp_mem[6] = 32'h60edfa65;
+        otp_mem[7] = 32'h4087b234;
+    end
+
+    // Registered output, one cycle after rd_en, only when boot_active
+    always_ff @(posedge clk)
+        otp_data <= (boot_active && otp_rd_en) ? otp_mem[otp_addr] : 32'h0;
 
     top_most dut (
         .clk(clk), .rst_n(rst_n),
@@ -43,13 +39,40 @@ module tb_top_most;
         .verify_done_o(verify_done), .signature_valid_o(sig_valid)
     );
 
-    int  fail = 0;
-    int  otp_req_count;
-    logic [2:0] otp_addr_seq [0:7];
-    int  otp_cap_idx;
-    logic otp_seq_ok;
+    // Flash words — 25 words total (word 0 = length, words 1-24 = data)
+    logic [31:0] flash [0:24];
+    initial begin
+        // Word 0: SHA length in words (R=8 + pubkey=8 + msg=8 = 24)
+        flash[0]  = 32'd24;
+        // Words 1-8: S (MSB first)
+        flash[1]  = 32'he0c52a27;
+        flash[2]  = 32'hf59fd2fd;
+        flash[3]  = 32'h971c5d4a;
+        flash[4]  = 32'hc97da751;
+        flash[5]  = 32'hd2b28568;
+        flash[6]  = 32'hf1169ec8;
+        flash[7]  = 32'hcee73616;
+        flash[8]  = 32'hf1e2ac0c;
+        // Words 9-16: R (MSB first)
+        flash[9]  = 32'h2a06b3b0;
+        flash[10] = 32'h3e37ffce;
+        flash[11] = 32'h5b5f688a;
+        flash[12] = 32'h4e42d562;
+        flash[13] = 32'hf7ea59f8;
+        flash[14] = 32'h04e6f443;
+        flash[15] = 32'hb5a0821a;
+        flash[16] = 32'h14defa68;
+        // Words 17-24: message (MSB first)
+        flash[17] = 32'h426f6f74;
+        flash[18] = 32'h6c6f6164;
+        flash[19] = 32'h65725f76;
+        flash[20] = 32'h312e305f;
+        flash[21] = 32'h496e6974;
+        flash[22] = 32'h5f536571;
+        flash[23] = 32'h75656e63;
+        flash[24] = 32'h652e2e2e;
+    end
 
-    // Stream one word
     task stream_word(input [31:0] d);
         @(posedge clk); #1;
         stream_data  = d;
@@ -58,100 +81,59 @@ module tb_top_most;
         stream_valid = 0;
     endtask
 
-    // Stream N words with incrementing data starting from base
-    task stream_n(input int n, input [31:0] base);
-        for (int i=0; i<n; i++) stream_word(base + i);
-    endtask
-
-    // Message: N=16 body words → total SHA words = 16+16 = 32
-    localparam int MSG_BODY_WORDS = 16;
-    localparam int SHA_LEN        = 16 + MSG_BODY_WORDS; // R+pubkey+msg = 32
+    int fail = 0;
 
     initial begin
         stream_data=0; stream_valid=0; start_verify=0;
         @(posedge clk); rst_n=1;
         repeat(2) @(posedge clk);
 
-        // --- Test 1: boot_active starts high ---
-        if (!boot_active) begin
-            $display("FAIL T1: boot_active should be 1 after reset"); fail++;
+        // Stream all 25 flash words
+        for (int i=0; i<=24; i++)
+            stream_word(flash[i]);
+
+        // Wait for SHA and register loading to complete
+        // SHA: ~200 cycles per block, 1 block here. ED25519 load: 17 cycles.
+        repeat(2000) @(posedge clk);
+
+        // Send start_verify
+        @(posedge clk); #1;
+        start_verify = 1;
+        @(posedge clk); #1;
+        start_verify = 0;
+
+        // Wait for ED25519 to complete — this takes many millions of cycles
+        wait(verify_done);
+        @(posedge clk);
+
+        // Check result
+        if (sig_valid) begin
+            $display("SUCCESS: signature_valid=1, signature verified correctly");
+        end else begin
+            $display("FAILURE: signature_valid=0, verification failed on valid signature");
+            fail++;
         end
 
-        // --- Stream flash data ---
-        // Word 0: SHA length
-        stream_word(SHA_LEN);
-
-        // Words 1-8: S
-        stream_n(8, 32'hAAAA_0000);
-
-        // Words 9-16: R
-        stream_n(8, 32'hBBBB_0000);
-
-        // Capture OTP sequence while streaming message body
-        otp_req_count = 0;
-        otp_cap_idx   = 0;
-
-        // Words 17+: message body — stream while monitoring OTP
-        fork
-            begin : stream_proc
-                stream_n(MSG_BODY_WORDS, 32'hCCCC_0000);
-            end
-            begin : otp_mon
-                // Monitor OTP reads for up to 500 cycles
-                repeat(500) begin
-                    @(posedge clk); #1;
-                    if (otp_rd_en && otp_cap_idx < 8) begin
-                        otp_addr_seq[otp_cap_idx] = otp_addr;
-                        otp_cap_idx++;
-                        otp_req_count++;
-                    end
-                end
-            end
-        join_any
-        disable stream_proc;
-        disable otp_mon;
-
-        // Let OTP reads complete
-        repeat(30) @(posedge clk);
-
-        // --- Test 2: OTP was read exactly 8 times ---
-        if (otp_req_count != 8) begin
-            $display("FAIL T2: OTP read %0d times, expected 8", otp_req_count); fail++;
+        // Check boot_active cleared
+        if (boot_active) begin
+            $display("FAILURE: boot_active did not deassert after verify_done");
+            fail++;
+        end else begin
+            $display("PASS: boot_active correctly deasserted after verify_done");
         end
-
-        // --- Test 3: OTP addresses were 0,1,2,...,7 in order ---
-        otp_seq_ok = 1;
-        for (int i=0; i<8; i++) begin
-            if (otp_addr_seq[i] !== i[2:0]) begin
-                $display("FAIL T3: OTP addr[%0d]=%0d expected %0d",
-                         i, otp_addr_seq[i], i);
-                fail++; otp_seq_ok=0;
-            end
-        end
-
-        // --- Stream remaining message if any and wait for module to reach WAIT_START ---
-        // Give generous time for SHA hashing (80 rounds * 32 words ~ thousands of cycles)
-        repeat(5000) @(posedge clk);
-
-        // T4/T5: ED25519 engine started — verify_done will come after many million cycles
-        // Orchestration verified above. Skipping full ED25519 wait.
-        $display("PASS T4: start_verify sent to ED25519, orchestration complete");
-
-        // --- Test 6: start_latch — send start before module is ready ---
-        // (covered by the fact that start_verify above may have arrived
-        //  before ST_WAIT_START; module should handle it)
 
         if (fail == 0)
-            $display("SUCCESS: top_most orchestration tests passed");
+            $display("SUCCESS: all functional tests passed");
         else
             $display("FAILURE: %0d test(s) failed", fail);
 
         $finish;
     end
 
-    // Absolute timeout
-    initial #500000000000 begin
-        $display("FAILURE: absolute timeout"); $finish;
+    // Timeout — ED25519 takes ~50M+ cycles, 10ns clock = 500ms sim time
+    initial #2000000000 begin
+        $display("FAILURE: timeout waiting for verify_done");
+        $finish;
     end
 
 endmodule
