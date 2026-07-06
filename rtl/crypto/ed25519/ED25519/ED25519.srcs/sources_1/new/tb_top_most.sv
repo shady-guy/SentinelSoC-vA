@@ -1,4 +1,5 @@
 `timescale 1ns/1ps
+
 module tb_top_most;
 
     logic        clk=0, rst_n=0;
@@ -13,7 +14,7 @@ module tb_top_most;
 
     always #5 clk = ~clk;
 
-    // OTP model — holds real pubkey, responds only when boot_active
+    // OTP model
     logic [31:0] otp_mem [0:7];
     initial begin
         otp_mem[0] = 32'h65aca07e;
@@ -26,7 +27,7 @@ module tb_top_most;
         otp_mem[7] = 32'h4087b234;
     end
 
-    // Registered output, one cycle after rd_en, only when boot_active
+    // Registered Output
     always_ff @(posedge clk)
         otp_data <= (boot_active && otp_rd_en) ? otp_mem[otp_addr] : 32'h0;
 
@@ -39,12 +40,10 @@ module tb_top_most;
         .verify_done_o(verify_done), .signature_valid_o(sig_valid)
     );
 
-    // Flash words — 25 words total (word 0 = length, words 1-24 = data)
+    // Flash Data
     logic [31:0] flash [0:24];
     initial begin
-        // Word 0: SHA length in words (R=8 + pubkey=8 + msg=8 = 24)
-        flash[0]  = 32'd24;
-        // Words 1-8: S (MSB first)
+        flash[0]  = 32'd24; 
         flash[1]  = 32'he0c52a27;
         flash[2]  = 32'hf59fd2fd;
         flash[3]  = 32'h971c5d4a;
@@ -53,7 +52,6 @@ module tb_top_most;
         flash[6]  = 32'hf1169ec8;
         flash[7]  = 32'hcee73616;
         flash[8]  = 32'hf1e2ac0c;
-        // Words 9-16: R (MSB first)
         flash[9]  = 32'h2a06b3b0;
         flash[10] = 32'h3e37ffce;
         flash[11] = 32'h5b5f688a;
@@ -62,7 +60,6 @@ module tb_top_most;
         flash[14] = 32'h04e6f443;
         flash[15] = 32'hb5a0821a;
         flash[16] = 32'h14defa68;
-        // Words 17-24: message (MSB first)
         flash[17] = 32'h426f6f74;
         flash[18] = 32'h6c6f6164;
         flash[19] = 32'h65725f76;
@@ -88,25 +85,19 @@ module tb_top_most;
         @(posedge clk); rst_n=1;
         repeat(2) @(posedge clk);
 
-        // Stream all 25 flash words
         for (int i=0; i<=24; i++)
             stream_word(flash[i]);
 
-        // Wait for SHA and register loading to complete
-        // SHA: ~200 cycles per block, 1 block here. ED25519 load: 17 cycles.
         repeat(2000) @(posedge clk);
 
-        // Send start_verify
         @(posedge clk); #1;
         start_verify = 1;
         @(posedge clk); #1;
         start_verify = 0;
 
-        // Wait for ED25519 to complete — this takes many millions of cycles
         wait(verify_done);
         @(posedge clk);
 
-        // Check result
         if (sig_valid) begin
             $display("SUCCESS: signature_valid=1, signature verified correctly");
         end else begin
@@ -114,7 +105,6 @@ module tb_top_most;
             fail++;
         end
 
-        // Check boot_active cleared
         if (boot_active) begin
             $display("FAILURE: boot_active did not deassert after verify_done");
             fail++;
@@ -130,7 +120,6 @@ module tb_top_most;
         $finish;
     end
 
-    // Timeout — ED25519 takes ~50M+ cycles, 10ns clock = 500ms sim time
     initial #2000000000 begin
         $display("FAILURE: timeout waiting for verify_done");
         $finish;
