@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-module tb_top_most_func;
+module tb_top_most;
 
     logic        clk=0, rst_n=0;
     logic [31:0] stream_data;
