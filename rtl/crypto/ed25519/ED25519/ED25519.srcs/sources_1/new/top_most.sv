@@ -177,7 +177,7 @@ module top_most (
                 // Construct R Register and feed to SHA (First 32 bytes)
                 ST_RECV_R: begin
                     if (!fifo_empty) begin
-                        // FIXED: Removed artificial byte swap. LSW feeds directly into top 32 bits and shifts down.
+                        // Load directly without byte swap (LE stream to LE core)
                         r_reg       <= {fifo_dout, r_reg[255:32]};
                         sha_addr    <= 6'(blk_ptr);
                         sha_wdata   <= fifo_dout;
@@ -193,7 +193,7 @@ module top_most (
                 // Construct S Register (Second 32 bytes)
                 ST_RECV_S: begin
                     if (!fifo_empty) begin
-                        // FIXED: Removed artificial byte swap. LSW feeds directly into top 32 bits and shifts down.
+                        // Load directly without byte swap
                         s_reg    <= {fifo_dout, s_reg[255:32]}; 
                         word_cnt <= word_cnt + 1;
                         if (word_cnt == 15) state <= ST_OTP_REQ; 
@@ -206,7 +206,7 @@ module top_most (
                     state       <= ST_OTP_LATCH;
                 end
                 ST_OTP_LATCH: begin
-                    // FIXED: Removed artificial byte swap.
+                    // Load directly without byte swap
                     pubkey_reg <= {otp_data_i, pubkey_reg[255:32]}; 
                     sha_addr   <= 6'(blk_ptr);
                     sha_wdata  <= otp_data_i;
@@ -266,10 +266,10 @@ module top_most (
                     end
                 end
 
-                // Extract 512-bit Hash
+                // Extract 512-bit Hash 
+                // Restore byte swap here: SHA512 standard output is Big-Endian. Ed25519 needs a Little-Endian integer.
                 ST_READ_HASH: begin
-                    // FIXED: Removed artificial byte swap.
-                    hash_reg <= {sha_rdata, hash_reg[511:32]}; 
+                    hash_reg <= {sha_rdata[7:0], sha_rdata[15:8], sha_rdata[23:16], sha_rdata[31:24], hash_reg[511:32]}; 
                     hash_idx <= hash_idx + 1;
                     if (hash_idx == 14) begin
                         sha_addr <= 6'h31;
@@ -279,7 +279,7 @@ module top_most (
                     end
                 end
                 ST_READ_HASH_LAST: begin
-                    hash_reg <= {sha_rdata, hash_reg[511:32]};
+                    hash_reg <= {sha_rdata[7:0], sha_rdata[15:8], sha_rdata[23:16], sha_rdata[31:24], hash_reg[511:32]};
                     load_idx <= 0;
                     state    <= ST_LOAD_REGS;
                 end

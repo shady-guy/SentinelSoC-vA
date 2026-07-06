@@ -17,15 +17,15 @@ module tb_top_most;
     // OTP model
     logic [31:0] otp_mem [0:7];
     initial begin
-        // FIXED: Reversed Word Order to reflect a Little Endian mapped Memory (LSW first)
-        otp_mem[0] = 32'h4087b234;
-        otp_mem[1] = 32'h60edfa65;
-        otp_mem[2] = 32'h339133e1;
-        otp_mem[3] = 32'h5f1a6036;
-        otp_mem[4] = 32'hb8c47add;
-        otp_mem[5] = 32'had156f5a;
-        otp_mem[6] = 32'hdafd4c58;
-        otp_mem[7] = 32'h65aca07e;
+        // Restored to exact original values
+        otp_mem[0] = 32'h65aca07e;
+        otp_mem[1] = 32'hdafd4c58;
+        otp_mem[2] = 32'had156f5a;
+        otp_mem[3] = 32'hb8c47add;
+        otp_mem[4] = 32'h5f1a6036;
+        otp_mem[5] = 32'h339133e1;
+        otp_mem[6] = 32'h60edfa65;
+        otp_mem[7] = 32'h4087b234;
     end
 
     // Combinational OTP Read Model (Zero Latency, No 'X's)
@@ -45,39 +45,36 @@ module tb_top_most;
     initial begin
         flash[0]  = 32'd24; 
         
-        // FIXED: Shifted sig_R to indices [1:8] and sig_S to [9:16] so ST_RECV_R gets R.
-        // FIXED: Reversed Word Order to reflect a Little Endian mapped Memory (LSW first).
-        
-        // sig_R = 256'h2a06b3b03e37ffce5b5f688a4e42d562f7ea59f804e6f443b5a0821a14defa68;
-        flash[1]  = 32'h14defa68;
-        flash[2]  = 32'hb5a0821a;
-        flash[3]  = 32'h04e6f443;
-        flash[4]  = 32'hf7ea59f8;
-        flash[5]  = 32'h4e42d562;
-        flash[6]  = 32'h5b5f688a;
-        flash[7]  = 32'h3e37ffce;
-        flash[8]  = 32'h2a06b3b0;
+        // Fix: Swapped the 8-word blocks for R and S, keeping original word ordering
+        // R Vector
+        flash[1]  = 32'h2a06b3b0;
+        flash[2]  = 32'h3e37ffce;
+        flash[3]  = 32'h5b5f688a;
+        flash[4]  = 32'h4e42d562;
+        flash[5]  = 32'hf7ea59f8;
+        flash[6]  = 32'h04e6f443;
+        flash[7]  = 32'hb5a0821a;
+        flash[8]  = 32'h14defa68;
 
-        // sig_S = 256'he0c52a27f59fd2fd971c5d4ac97da751d2b28568f1169ec8cee73616f1e2ac0c;
-        flash[9]  = 32'hf1e2ac0c;
-        flash[10] = 32'hcee73616;
-        flash[11] = 32'hf1169ec8;
-        flash[12] = 32'hd2b28568;
-        flash[13] = 32'hc97da751;
-        flash[14] = 32'h971c5d4a;
-        flash[15] = 32'hf59fd2fd;
-        flash[16] = 32'he0c52a27;
+        // S Vector
+        flash[9]  = 32'he0c52a27;
+        flash[10] = 32'hf59fd2fd;
+        flash[11] = 32'h971c5d4a;
+        flash[12] = 32'hc97da751;
+        flash[13] = 32'hd2b28568;
+        flash[14] = 32'hf1169ec8;
+        flash[15] = 32'hcee73616;
+        flash[16] = 32'hf1e2ac0c;
 
-        // Message = "Bootloader_v1.0_Init_Sequence..."
-        // FIXED: Strings in LE memory have Byte 0 at [7:0]. Swapped internal bytes.
-        flash[17] = 32'h746f6f42; // "Boot"
-        flash[18] = 32'h64616f6c; // "load"
-        flash[19] = 32'h765f7265; // "er_v"
-        flash[20] = 32'h5f302e31; // "1.0_"
-        flash[21] = 32'h74696e49; // "Init"
-        flash[22] = 32'h7165535f; // "_Seq"
-        flash[23] = 32'h636e6575; // "uenc"
-        flash[24] = 32'h2e2e2e65; // "e..."
+        // Restored string bytes to exact original format
+        flash[17] = 32'h426f6f74;
+        flash[18] = 32'h6c6f6164;
+        flash[19] = 32'h65725f76;
+        flash[20] = 32'h312e305f;
+        flash[21] = 32'h496e6974;
+        flash[22] = 32'h5f536571;
+        flash[23] = 32'h75656e63;
+        flash[24] = 32'h652e2e2e;
     end
 
     task stream_word(input [31:0] d);
