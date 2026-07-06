@@ -180,7 +180,7 @@ module top_most (
                         // LOCKED: Left-shift keeps original correct word ordering
                         r_reg       <= {r_reg[223:0], fifo_dout};
                         sha_addr    <= 6'(blk_ptr);
-                        sha_wdata   <= fifo_dout;
+                        sha_wdata   <= {fifo_dout[7:0], fifo_dout[15:8], fifo_dout[23:16], fifo_dout[31:24]};
                         sha_wen     <= 1;
                         sha_fed     <= sha_fed + 1;
                         blk_ptr     <= blk_ptr + 1;
@@ -209,7 +209,7 @@ module top_most (
                     // LOCKED: Left-shift keeps original correct word ordering
                     pubkey_reg <= {pubkey_reg[223:0], otp_data_i}; 
                     sha_addr   <= 6'(blk_ptr);
-                    sha_wdata  <= otp_data_i;
+                    sha_wdata  <= {otp_data_i[7:0], otp_data_i[15:8], otp_data_i[23:16], otp_data_i[31:24]};
                     sha_wen    <= 1;
                     sha_fed    <= sha_fed + 1;
                     blk_ptr    <= blk_ptr + 1;
@@ -240,7 +240,7 @@ module top_most (
                 ST_RECV_MSG: begin
                     if (!fifo_empty) begin
                         sha_addr  <= 6'(blk_ptr);
-                        sha_wdata <= fifo_dout;
+                        sha_wdata <= {fifo_dout[7:0], fifo_dout[15:8], fifo_dout[23:16], fifo_dout[31:24]};
                         sha_wen   <= 1;
                         sha_fed   <= sha_fed + 1;
                         blk_ptr   <= blk_ptr + 1;
