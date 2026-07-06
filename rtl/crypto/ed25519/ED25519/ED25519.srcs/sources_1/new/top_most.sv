@@ -177,8 +177,8 @@ module top_most (
                 // Construct R Register and feed to SHA (First 32 bytes)
                 ST_RECV_R: begin
                     if (!fifo_empty) begin
-                        // FIXED: Added 32-bit byte swap to map stream data format correctly
-                        r_reg       <= {{fifo_dout[7:0], fifo_dout[15:8], fifo_dout[23:16], fifo_dout[31:24]}, r_reg[255:32]};
+                        // FIXED: Removed artificial byte swap. LSW feeds directly into top 32 bits and shifts down.
+                        r_reg       <= {fifo_dout, r_reg[255:32]};
                         sha_addr    <= 6'(blk_ptr);
                         sha_wdata   <= fifo_dout;
                         sha_wen     <= 1;
@@ -193,8 +193,8 @@ module top_most (
                 // Construct S Register (Second 32 bytes)
                 ST_RECV_S: begin
                     if (!fifo_empty) begin
-                        // FIXED: Added 32-bit byte swap to map stream data format correctly
-                        s_reg    <= {{fifo_dout[7:0], fifo_dout[15:8], fifo_dout[23:16], fifo_dout[31:24]}, s_reg[255:32]}; 
+                        // FIXED: Removed artificial byte swap. LSW feeds directly into top 32 bits and shifts down.
+                        s_reg    <= {fifo_dout, s_reg[255:32]}; 
                         word_cnt <= word_cnt + 1;
                         if (word_cnt == 15) state <= ST_OTP_REQ; 
                     end
@@ -206,8 +206,8 @@ module top_most (
                     state       <= ST_OTP_LATCH;
                 end
                 ST_OTP_LATCH: begin
-                    // FIXED: Added 32-bit byte swap to map OTP memory format correctly
-                    pubkey_reg <= {{otp_data_i[7:0], otp_data_i[15:8], otp_data_i[23:16], otp_data_i[31:24]}, pubkey_reg[255:32]}; 
+                    // FIXED: Removed artificial byte swap.
+                    pubkey_reg <= {otp_data_i, pubkey_reg[255:32]}; 
                     sha_addr   <= 6'(blk_ptr);
                     sha_wdata  <= otp_data_i;
                     sha_wen    <= 1;
@@ -266,9 +266,10 @@ module top_most (
                     end
                 end
 
-                // Extract 512-bit Hash (Right Shift + Byte Swap to map SHA's Big-Endian output to Ed25519's Little-Endian format)
+                // Extract 512-bit Hash
                 ST_READ_HASH: begin
-                    hash_reg <= {sha_rdata[7:0], sha_rdata[15:8], sha_rdata[23:16], sha_rdata[31:24], hash_reg[511:32]}; 
+                    // FIXED: Removed artificial byte swap.
+                    hash_reg <= {sha_rdata, hash_reg[511:32]}; 
                     hash_idx <= hash_idx + 1;
                     if (hash_idx == 14) begin
                         sha_addr <= 6'h31;
@@ -278,7 +279,7 @@ module top_most (
                     end
                 end
                 ST_READ_HASH_LAST: begin
-                    hash_reg <= {sha_rdata[7:0], sha_rdata[15:8], sha_rdata[23:16], sha_rdata[31:24], hash_reg[511:32]};
+                    hash_reg <= {sha_rdata, hash_reg[511:32]};
                     load_idx <= 0;
                     state    <= ST_LOAD_REGS;
                 end
