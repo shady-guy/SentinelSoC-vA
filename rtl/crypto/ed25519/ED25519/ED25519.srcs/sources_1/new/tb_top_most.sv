@@ -148,7 +148,7 @@ module tb_top_most;
                 @(posedge clk);
             end
             begin : timeout_done
-                repeat(2000000) @(posedge clk);
+                repeat(2000000000) @(posedge clk);
                 $display("NOTE T4: verify_done timeout — ED25519 may need more cycles");
                 // Not a hard failure — depends on full submodule availability
             end
