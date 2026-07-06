@@ -177,8 +177,8 @@ module top_most (
                 // Construct R Register and feed to SHA (First 32 bytes)
                 ST_RECV_R: begin
                     if (!fifo_empty) begin
-                        // RESTORED: Left-shift keeps original word ordering correct
-                        r_reg       <= {r_reg[223:0], fifo_dout};
+                        // RIGHT SHIFT: Puts Word 0 at LSB
+                        r_reg       <= {fifo_dout, r_reg[255:32]}; 
                         sha_addr    <= 6'(blk_ptr);
                         sha_wdata   <= fifo_dout;
                         sha_wen     <= 1;
@@ -193,8 +193,8 @@ module top_most (
                 // Construct S Register (Second 32 bytes)
                 ST_RECV_S: begin
                     if (!fifo_empty) begin
-                        // RESTORED: Left-shift keeps original word ordering correct
-                        s_reg    <= {s_reg[223:0], fifo_dout}; 
+                        // RIGHT SHIFT: Puts Word 0 at LSB
+                        s_reg    <= {fifo_dout, s_reg[255:32]}; 
                         word_cnt <= word_cnt + 1;
                         if (word_cnt == 15) state <= ST_OTP_REQ; 
                     end
@@ -206,8 +206,8 @@ module top_most (
                     state       <= ST_OTP_LATCH;
                 end
                 ST_OTP_LATCH: begin
-                    // RESTORED: Left-shift keeps original word ordering correct
-                    pubkey_reg <= {pubkey_reg[223:0], otp_data_i}; 
+                    // RIGHT SHIFT: Puts Word 0 at LSB
+                    pubkey_reg <= {otp_data_i, pubkey_reg[255:32]}; 
                     sha_addr   <= 6'(blk_ptr);
                     sha_wdata  <= otp_data_i;
                     sha_wen    <= 1;
@@ -268,8 +268,8 @@ module top_most (
 
                 // Extract 512-bit Hash 
                 ST_READ_HASH: begin
-                    // FIXED: Byte-swap the SHA output, but left-shift to match R/S string formatting
-                    hash_reg <= {hash_reg[479:0], sha_rdata[7:0], sha_rdata[15:8], sha_rdata[23:16], sha_rdata[31:24]}; 
+                    // RIGHT SHIFT + BYTE SWAP: Aligns Big-Endian SHA words to Little-Endian scalar
+                    hash_reg <= { {sha_rdata[7:0], sha_rdata[15:8], sha_rdata[23:16], sha_rdata[31:24]}, hash_reg[511:32] }; 
                     hash_idx <= hash_idx + 1;
                     if (hash_idx == 14) begin
                         sha_addr <= 6'h31;
@@ -280,8 +280,8 @@ module top_most (
                 end
                 
                 ST_READ_HASH_LAST: begin
-                    // FIXED: Byte-swap the SHA output, but left-shift to match R/S string formatting
-                    hash_reg <= {hash_reg[479:0], sha_rdata[7:0], sha_rdata[15:8], sha_rdata[23:16], sha_rdata[31:24]};
+                    // RIGHT SHIFT + BYTE SWAP: Aligns Big-Endian SHA words to Little-Endian scalar
+                    hash_reg <= { {sha_rdata[7:0], sha_rdata[15:8], sha_rdata[23:16], sha_rdata[31:24]}, hash_reg[511:32] };
                     load_idx <= 0;
                     state    <= ST_LOAD_REGS;
                 end
