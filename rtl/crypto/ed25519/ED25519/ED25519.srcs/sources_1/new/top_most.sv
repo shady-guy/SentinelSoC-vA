@@ -179,7 +179,7 @@ module top_most (
                 // Construct S Register (MSB First)
                 ST_RECV_S: begin
                     if (!fifo_empty) begin
-                        s_reg <= {s_reg[223:0], fifo_dout}; 
+                        s_reg <= {fifo_dout, s_reg[255:32]}; 
                         word_cnt <= word_cnt + 1;
                         if (word_cnt == 7) state <= ST_RECV_R; 
                     end
@@ -188,7 +188,7 @@ module top_most (
                 // Construct R Register and feed to SHA
                 ST_RECV_R: begin
                     if (!fifo_empty) begin
-                        r_reg       <= {r_reg[223:0], fifo_dout};
+                        r_reg       <= {fifo_dout, r_reg[255:32]};
                         sha_addr    <= 6'(blk_ptr);
                         sha_wdata   <= fifo_dout;
                         sha_wen     <= 1;
@@ -206,7 +206,7 @@ module top_most (
                     state       <= ST_OTP_LATCH;
                 end
                 ST_OTP_LATCH: begin
-                    pubkey_reg <= {pubkey_reg[223:0], otp_data_i}; 
+                    pubkey_reg <= {otp_data_i, pubkey_reg[255:32]};
                     sha_addr   <= 6'(blk_ptr);
                     sha_wdata  <= otp_data_i;
                     sha_wen    <= 1;
@@ -271,7 +271,7 @@ module top_most (
 
                 // Extract 512-bit Hash (MSB First)
                 ST_READ_HASH: begin
-                    hash_reg <= {hash_reg[479:0], sha_rdata}; 
+                    hash_reg <= {sha_rdata, hash_reg[511:32]};
                     hash_idx <= hash_idx + 1;
                     if (hash_idx == 14) begin
                         sha_addr <= 6'h31;
@@ -281,7 +281,7 @@ module top_most (
                     end
                 end
                 ST_READ_HASH_LAST: begin
-                    hash_reg <= {hash_reg[479:0], sha_rdata};
+                    hash_reg <= {sha_rdata, hash_reg[511:32]};
                     load_idx <= 0;
                     state    <= ST_LOAD_REGS;
                 end
