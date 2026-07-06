@@ -78,26 +78,75 @@ module tb_top_most;
         stream_valid = 0;
     endtask
 
+    // =========================================================================
+    // DEBUG MONITORS
+    // =========================================================================
+
+    // Monitor Top FSM
+    always @(dut.state) begin
+        $display("[%0t] TOP_MOST FSM: %s", $time, dut.state.name());
+    end
+
+    // Monitor SHA FSM
+    always @(dut.u_sha.state) begin
+        $display("[%0t] SHA512 FSM  : %s", $time, dut.u_sha.state.name());
+    end
+
+    // Monitor Key Events & Register Dump
+    always @(posedge clk) begin
+        if (dut.sha_intr) begin
+            $display("[%0t] EVENT       : SHA512 Interrupt Asserted (Hash Complete)", $time);
+        end
+        if (otp_rd_en && !dut.otp_rd_en_o) begin // pulse detection
+            $display("[%0t] EVENT       : OTP Read Started", $time);
+        end
+        if (dut.state == 5'd16 && dut.ed_start == 1) begin // ST_ED_START
+            $display("==================================================");
+            $display("[%0t] PRE-VERIFICATION REGISTER DUMP:", $time);
+            $display("S_REG      = %64x", dut.s_reg);
+            $display("R_REG      = %64x", dut.r_reg);
+            $display("PUBKEY_REG = %64x", dut.pubkey_reg);
+            $display("HASH_REG   = %128x", dut.hash_reg);
+            $display("==================================================");
+            $display("[%0t] EVENT       : ED25519 Engine Started", $time);
+        end
+        if (verify_done && !dut.verify_done_o) begin
+            $display("[%0t] EVENT       : ED25519 Engine Done | Sig Valid = %b", $time, sig_valid);
+        end
+    end
+
+    // =========================================================================
+
     int fail = 0;
 
     initial begin
+        $display("==================================================");
+        $display("Starting Secure Boot Simulation...");
+        $display("==================================================");
+        
         stream_data=0; stream_valid=0; start_verify=0;
         @(posedge clk); rst_n=1;
         repeat(2) @(posedge clk);
 
-        for (int i=0; i<=24; i++)
+        for (int i=0; i<=24; i++) begin
             stream_word(flash[i]);
+            if (i == 0) $display("[%0t] Streamed: SHA Length = %0d", $time, flash[i]);
+        end
+        $display("[%0t] All Flash Data Streamed.", $time);
 
+        // Allow time for SHA processing and OTP reads
         repeat(2000) @(posedge clk);
 
         @(posedge clk); #1;
         start_verify = 1;
+        $display("[%0t] EVENT       : Host CPU pulsed start_verify", $time);
         @(posedge clk); #1;
         start_verify = 0;
 
         wait(verify_done);
         @(posedge clk);
 
+        $display("==================================================");
         if (sig_valid) begin
             $display("SUCCESS: signature_valid=1, signature verified correctly");
         end else begin
