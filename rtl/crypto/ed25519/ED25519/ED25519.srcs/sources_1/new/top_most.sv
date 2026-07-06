@@ -1,292 +1,318 @@
-module fpga_demo_top (
-    input  logic clk,
-    input  logic rst_n,
-    input  logic start_demo,
-    
-    // Status Outputs (Drive to LEDs on Nexys 4)
-    output logic demo_done,
-    output logic signature_valid
+// top_most.sv — Secure boot orchestrator, passive receiver
+// Receives flash stream, feeds SHA-512, reads OTP pubkey,
+// loads ED25519 registers, triggers verification.
+
+module top_most (
+    input  logic        clk,
+    input  logic        rst_n,
+    input  logic [31:0] stream_data_i,  // from soc_buffer
+    input  logic        stream_valid_i,
+    input  logic        start_verify_i, // from obi_wrapper (1-cycle pulse)
+    output logic [2:0]  otp_addr_o,
+    output logic        otp_rd_en_o,
+    input  logic [31:0] otp_data_i,
+    output logic        boot_active_o,
+    output logic        verify_done_o,
+    output logic        signature_valid_o
 );
 
-    // --------------------------------------------------------
-    // Byte Swap Helper (Fixes Little-Endian requirements)
-    // --------------------------------------------------------
-    function automatic logic [31:0] bswap(input logic [31:0] v);
-        return {v[7:0], v[15:8], v[23:16], v[31:24]};
-    endfunction
+    // Ed25519 constants
+    localparam logic [255:0] CONST_ZERO = 256'd0;
+    localparam logic [255:0] CONST_ONE  = 256'd1;
+    localparam logic [255:0] CURVE_D  = 256'h52036cee2b6ffe738cc740797779e89800700a4d4141d8ab75eb4dca135978a3;
+    localparam logic [255:0] CURVE_2D = 256'h2406d9dc56dffce7198e80f2eef3d13000e0149a8283b156ebd69b9426b2f159;
+    localparam logic [255:0] SQRT_M1  = 256'h2b8324804fc1df0b2b4d00993dfbd7a72f431806ad2fe478c4ee1b274a0ea0b0;
+    localparam logic [255:0] G_X      = 256'h216936d3cd6e53fec0a4e231fdd6dc5c692cc7609525a7b2c9562d608f25d51a;
+    localparam logic [255:0] G_Y      = 256'h6666666666666666666666666666666666666666666666666666666666666658;
+    localparam logic [255:0] G_Z      = 256'd1;
+    localparam logic [255:0] G_T      = 256'h67875f0fd78b766566ea4e8e64abe37d20f09f80775152f56dde8ab3a5b7dda3;
+    localparam logic [255:0] MU_HI    = 256'h000000000000000000000000000000000000000000000000000000000000000f;
+    localparam logic [255:0] MU_LO    = 256'hffffffffffffffffffffffffffffffeb2106215d086329a7ed9ce5a30a2c131b;
+    localparam logic [255:0] CURVE_L  = 256'h1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed;
 
-    // --------------------------------------------------------
-    // Internal Wires & Registers
-    // --------------------------------------------------------
-    logic [15:0] bram_addr;
-    logic [31:0] bram_dout;
-    
+    // SHA-512 interface
     logic [5:0]  sha_addr;
     logic        sha_wen;
-    logic [31:0] sha_wdata;
-    logic [31:0] sha_rdata;
+    logic [31:0] sha_wdata, sha_rdata;
     logic        sha_intr;
-    
-    logic        ed_start;
-    logic        ed_done;
-    logic        ed_valid;
-    
-    logic        ed_ext_we;
-    logic [4:0]  ed_ext_dest_sel;
-    logic [1:0]  ed_data_sel;
-    logic [255:0] ed_ext_data_1;
 
-    // Extracted Ed25519 Registers
-    logic [511:0] hash_reg;
-    logic [255:0] s_reg, r_reg, pubkey_reg;
-    logic [31:0]  msg_length;
-    logic [31:0]  words_sent;
-    logic [4:0]   sha_read_idx;
-    logic [3:0]   read_count;
+    sha512_top u_sha (
+        .clk(clk), .rst_n(rst_n),
+        .addr_i(sha_addr), .wr_en_i(sha_wen),
+        .wdata_i(sha_wdata), .rdata_o(sha_rdata), .intr_o(sha_intr)
+    );
 
-    // --------------------------------------------------------
-    // FSM States
-    // --------------------------------------------------------
+    // ED25519 interface
+    logic        ed_start, ed_done, ed_valid, ed_ext_we;
+    logic [4:0]  ed_dest;
+    logic [1:0]  ed_dsel;
+    logic [255:0] ed_din;
+
+    top_ed25519 u_ed (
+        .clk(clk), .rst_n(rst_n),
+        .start_verify(ed_start),
+        .ext_data_1(ed_din), .ext_data_2(256'd0), .otp_data(256'd0),
+        .data_sel(ed_dsel), .ext_we(ed_ext_we), .ext_dest_sel(ed_dest),
+        .verify_done(ed_done), .signature_valid(ed_valid)
+    );
+
+    assign verify_done_o     = ed_done;
+    assign signature_valid_o = ed_valid;
+
+    // FSM
     typedef enum logic [4:0] {
-        ST_IDLE,
-        ST_READ_LEN,
-        ST_WAIT_LEN,
-        ST_READ_S_REQ,
-        ST_READ_S_ACK,
-        ST_CFG_SHA_LEN,
-        ST_CFG_SHA_CTRL,
-        ST_SHA_FEED_WAIT,
-        ST_SHA_FEED_WRITE,
-        ST_SHA_BRAM_DELAY,
-        ST_WAIT_HASH,
-        ST_READ_HASH_REQ,
-        ST_READ_HASH_ACK,
-        ST_LOAD_REG_S,
-        ST_LOAD_REG_R,
-        ST_LOAD_REG_A,
-        ST_LOAD_REG_HLO,
-        ST_LOAD_REG_HHI,
-        ST_ED_START,
-        ST_ED_WAIT,
-        ST_DONE
-    } sys_state_t;
-    
-    sys_state_t state;
+        ST_IDLE, ST_SHA_CFG_LEN, ST_SHA_CFG_CTRL, ST_SHA_POLL,
+        ST_RECV,
+        ST_OTP_REQ, ST_OTP_LATCH,
+        ST_DRAIN, ST_BLK_POLL,
+        ST_WAIT_INTR, ST_READ_HASH, ST_READ_HASH_LAST,
+        ST_LOAD_REGS, ST_WAIT_START, ST_ED_START, ST_ED_WAIT, ST_DONE
+    } state_t;
+    state_t state;
 
-    // --------------------------------------------------------
-    // Sub-Module Instantiations
-    // --------------------------------------------------------
-    firmware_bram #(.INIT_FILE("firmware.mem")) u_bram (
-        .clk  (clk),
-        .addr (bram_addr),
-        .dout (bram_dout)
-    );
+    // Datapath
+    logic [31:0]  sha_len_reg;
+    logic [255:0] s_reg, r_reg, pubkey_reg;
+    logic [511:0] hash_reg;
+    logic [31:0]  word_cnt;      // global stream counter
+    logic [31:0]  sha_fed;       // total words written to SHA data range
+    logic [4:0]   blk_ptr;       // position in current 32-word SHA block
+    logic [2:0]   otp_idx;
+    logic [3:0]   hash_idx;
+    logic [4:0]   load_idx;
 
-    sha512_top u_sha512 (
-        .clk     (clk),
-        .rst_n   (rst_n),
-        .addr_i  (sha_addr),
-        .wr_en_i (sha_wen),
-        .wdata_i (sha_wdata),
-        .rdata_o (sha_rdata),
-        .intr_o  (sha_intr)
-    );
+    // 16-word staging FIFO
+    logic [31:0] stage [0:15];
+    logic [3:0]  s_wr, s_rd, s_cnt;
 
-    top_ed25519 u_ed25519 (
-        .clk             (clk),
-        .rst_n           (rst_n),
-        .start_verify    (ed_start),
-        
-        .ext_data_1      (ed_ext_data_1),
-        .ext_data_2      (256'd0), 
-        .otp_data        (256'd0),
-        .data_sel        (ed_data_sel),
-        
-        .ext_we          (ed_ext_we),        // Added external WE
-        .ext_dest_sel    (ed_ext_dest_sel),  // Added external Dest
-        
-        .verify_done     (ed_done),
-        .signature_valid (ed_valid)
-    );
+    logic otp_done, start_latch, boot_q;
 
-    // --------------------------------------------------------
-    // Master System Orchestrator FSM
-    // --------------------------------------------------------
+    assign boot_active_o = boot_q;
+    assign otp_addr_o    = otp_idx;
+
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state           <= ST_IDLE;
-            bram_addr       <= 16'd0;
-            sha_addr        <= 6'd0;
-            sha_wen         <= 1'b0;
-            sha_wdata       <= 32'd0;
-            ed_start        <= 1'b0;
-            demo_done       <= 1'b0;
-            signature_valid <= 1'b0;
-            ed_ext_we       <= 1'b0;
-            ed_ext_dest_sel <= 5'd0;
-            ed_data_sel     <= 2'b00;
+            state       <= ST_IDLE;
+            word_cnt    <= 0; sha_fed <= 0; blk_ptr <= 0;
+            otp_idx     <= 0; hash_idx <= 0; load_idx <= 0;
+            s_wr<=0; s_rd<=0; s_cnt<=0;
+            otp_done<=0; start_latch<=0; boot_q<=1;
+            sha_len_reg<=0; s_reg<=0; r_reg<=0; pubkey_reg<=0; hash_reg<=0;
+            sha_addr<=0; sha_wen<=0; sha_wdata<=0;
+            ed_start<=0; ed_ext_we<=0; ed_dest<=0; ed_dsel<=0; ed_din<=0;
+            otp_rd_en_o<=0;
         end else begin
+            // defaults
+            sha_wen <= 0; ed_start <= 0; otp_rd_en_o <= 0;
+
+            if (start_verify_i) start_latch <= 1;
+            if (ed_done)        boot_q      <= 0;
+
             case (state)
+
                 ST_IDLE: begin
-                    demo_done <= 1'b0;
-                    ed_ext_we <= 1'b0;
-                    if (start_demo) begin
-                        bram_addr <= 16'd0; 
-                        state     <= ST_READ_LEN;
+                    if (stream_valid_i) begin
+                        sha_len_reg <= stream_data_i;
+                        word_cnt    <= 1;
+                        state       <= ST_SHA_CFG_LEN;
                     end
                 end
 
-                ST_READ_LEN: state <= ST_WAIT_LEN; 
-
-                ST_WAIT_LEN: begin
-                    msg_length <= bram_dout;
-                    bram_addr  <= 16'd1; // Address 1 is Start of S
-                    read_count <= 4'd0;
-                    state      <= ST_READ_S_REQ;
+                // Configure SHA: length then start+init
+                ST_SHA_CFG_LEN: begin
+                    sha_addr<=6'h32; sha_wdata<=sha_len_reg; sha_wen<=1;
+                    state <= ST_SHA_CFG_CTRL;
+                end
+                ST_SHA_CFG_CTRL: begin
+                    sha_addr<=6'h20; sha_wdata<=32'h03; sha_wen<=1;
+                    state <= ST_SHA_POLL;
+                end
+                ST_SHA_POLL: begin
+                    sha_addr <= 6'h21;
+                    if (sha_rdata[0]) state <= ST_RECV;
                 end
 
-                // --- 1. Extract Signature S ---
-                ST_READ_S_REQ: state <= ST_READ_S_ACK;
-                
-                ST_READ_S_ACK: begin
-                    // Byte-swap to preserve Little Endian
-                    s_reg <= {bswap(bram_dout), s_reg[255:32]}; 
-                    
-                    if (read_count == 7) begin
-                        bram_addr <= 16'd9; // Jump to R (Start of SHA hash)
-                        state     <= ST_CFG_SHA_LEN;
+                // Main receive
+                ST_RECV: begin
+                    // All SHA data sent — go wait for hash
+                    if (sha_fed == sha_len_reg) begin
+                        state <= ST_WAIT_INTR;
+
+                    // After word 16, trigger OTP read
+                    end else if (word_cnt == 17 && !otp_done) begin
+                        otp_idx <= 0;
+                        state   <= ST_OTP_REQ;
+
+                    // Drain staging when OTP done and staging has data
+                    end else if (otp_done && s_cnt > 0) begin
+                        state <= ST_DRAIN;
+
+                    end else if (stream_valid_i) begin
+                        word_cnt <= word_cnt + 1;
+
+                        if (word_cnt >= 1 && word_cnt <= 8) begin
+                            // S words
+                            s_reg <= {stream_data_i, s_reg[255:32]};
+                        end
+                        else if (word_cnt >= 9 && word_cnt <= 16) begin
+                            // R words — also feed SHA
+                            r_reg       <= {stream_data_i, r_reg[255:32]};
+                            sha_addr    <= 6'(word_cnt - 9);
+                            sha_wdata   <= stream_data_i;
+                            sha_wen     <= 1;
+                            sha_fed     <= sha_fed + 1;
+                            blk_ptr     <= blk_ptr + 1;
+                        end
+                        else if (word_cnt >= 17) begin
+                            if (!otp_done) begin
+                                // Stage it
+                                stage[s_wr] <= stream_data_i;
+                                s_wr <= s_wr + 1;
+                                s_cnt <= s_cnt + 1;
+                            end else begin
+                                // Feed SHA directly
+                                sha_addr  <= 6'(blk_ptr);
+                                sha_wdata <= stream_data_i;
+                                sha_wen   <= 1;
+                                sha_fed   <= sha_fed + 1;
+                                blk_ptr   <= blk_ptr + 1;
+                                if (blk_ptr == 31) begin
+                                    blk_ptr <= 0;
+                                    state   <= ST_BLK_POLL;
+                                end
+                            end
+                        end
+                    end
+                end
+
+                // OTP: assert rd_en, then latch next cycle
+                ST_OTP_REQ: begin
+                    otp_rd_en_o <= 1;
+                    state       <= ST_OTP_LATCH;
+                end
+                ST_OTP_LATCH: begin
+                    pubkey_reg <= {otp_data_i, pubkey_reg[255:32]};
+                    sha_addr   <= 6'(blk_ptr);
+                    sha_wdata  <= otp_data_i;
+                    sha_wen    <= 1;
+                    sha_fed    <= sha_fed + 1;
+                    blk_ptr    <= blk_ptr + 1;
+                    if (otp_idx == 7) begin
+                        otp_done <= 1;
+                        if (blk_ptr == 31) begin
+                            blk_ptr <= 0; state <= ST_BLK_POLL;
+                        end else
+                            state <= (s_cnt > 0) ? ST_DRAIN : ST_RECV;
                     end else begin
-                        bram_addr <= bram_addr + 1;
-                        read_count <= read_count + 1;
-                        state <= ST_READ_S_REQ;
+                        otp_idx <= otp_idx + 1;
+                        state   <= ST_OTP_REQ;
                     end
                 end
 
-                // --- 2. Configure SHA-512 ---
-                ST_CFG_SHA_LEN: begin
-                    sha_addr  <= 6'h32;
-                    sha_wdata <= msg_length;
-                    sha_wen   <= 1'b1;
-                    state     <= ST_CFG_SHA_CTRL;
+                // Drain staging FIFO into SHA
+                ST_DRAIN: begin
+                    if (s_cnt > 0 && sha_fed < sha_len_reg) begin
+                        sha_addr  <= 6'(blk_ptr);
+                        sha_wdata <= stage[s_rd];
+                        sha_wen   <= 1;
+                        sha_fed   <= sha_fed + 1;
+                        blk_ptr   <= blk_ptr + 1;
+                        s_rd      <= s_rd + 1;
+                        s_cnt     <= s_cnt - 1;
+                        if (blk_ptr == 31) begin
+                            blk_ptr <= 0; state <= ST_BLK_POLL;
+                        end
+                    end else begin
+                        state <= (sha_fed == sha_len_reg) ? ST_WAIT_INTR : ST_RECV;
+                    end
                 end
 
-                ST_CFG_SHA_CTRL: begin
-                    sha_addr   <= 6'h20;
-                    sha_wdata  <= 32'h03; 
-                    sha_wen    <= 1'b1;
-                    words_sent <= 32'd0;
-                    state      <= ST_SHA_FEED_WAIT;
+                // Poll SHA ready after full block
+                ST_BLK_POLL: begin
+                    sha_addr <= 6'h21;
+                    if (sha_rdata[0]) begin
+                        if (sha_fed == sha_len_reg)
+                            state <= ST_WAIT_INTR;
+                        else
+                            state <= (s_cnt > 0) ? ST_DRAIN : ST_RECV;
+                    end
                 end
 
-                // --- 3. Feed BRAM Data & Strip R/PubKey ---
-                ST_SHA_FEED_WAIT: begin
-                    sha_wen <= 1'b0;
-                    sha_addr <= 6'h21; 
-                    if (sha_rdata[0] == 1'b1) state <= ST_SHA_FEED_WRITE;
-                end
-
-                ST_SHA_FEED_WRITE: begin
-                    sha_addr  <= {1'b0, words_sent[4:0]}; 
-                    sha_wdata <= bram_dout;               
-                    sha_wen   <= 1'b1;
-                    
-                    // Sneakily capture R and PubKey while feeding SHA
-                    if (bram_addr >= 9 && bram_addr <= 16)
-                        r_reg <= {bswap(bram_dout), r_reg[255:32]};
-                    if (bram_addr >= 17 && bram_addr <= 24)
-                        pubkey_reg <= {bswap(bram_dout), pubkey_reg[255:32]};
-                    
-                    words_sent <= words_sent + 1;
-                    bram_addr  <= bram_addr + 1;
-                    
-                    if (words_sent + 1 == msg_length)
-                        state <= ST_WAIT_HASH;
-                    else if ((words_sent + 1) % 32 == 0)
-                        state <= ST_SHA_FEED_WAIT; 
-                    else
-                        state <= ST_SHA_BRAM_DELAY; 
-                end
-
-                ST_SHA_BRAM_DELAY: begin
-                    sha_wen <= 1'b0;
-                    state   <= ST_SHA_FEED_WRITE;
-                end
-
-                // --- 4. Extract 512-bit Hash ---
-                ST_WAIT_HASH: begin
-                    sha_wen <= 1'b0;
+                // Wait for SHA done interrupt
+                ST_WAIT_INTR: begin
                     if (sha_intr) begin
-                        sha_read_idx <= 5'd0;
-                        state        <= ST_READ_HASH_REQ;
+                        hash_idx <= 0;
+                        sha_addr <= 6'h22;
+                        state    <= ST_READ_HASH;
                     end
                 end
 
-                ST_READ_HASH_REQ: begin
-                    sha_addr <= 6'h22 + sha_read_idx; 
-                    state    <= ST_READ_HASH_ACK;
+                // Read 16 hash words (0x22-0x31)
+                // rdata_o is combinational from addr_i, so:
+                // cycle 0: set addr=0x22, rdata not yet latched
+                // cycle 1: latch rdata[0x22], set addr=0x23 ...
+                ST_READ_HASH: begin
+                    hash_reg <= {sha_rdata, hash_reg[511:32]};
+                    hash_idx <= hash_idx + 1;
+                    if (hash_idx == 14) begin
+                        sha_addr <= 6'h31;
+                        state    <= ST_READ_HASH_LAST;
+                    end else begin
+                        sha_addr <= 6'h22 + {2'b0, hash_idx + 1};
+                    end
+                end
+                ST_READ_HASH_LAST: begin
+                    hash_reg <= {sha_rdata, hash_reg[511:32]};
+                    load_idx <= 0;
+                    state    <= ST_LOAD_REGS;
                 end
 
-                ST_READ_HASH_ACK: begin
-                    // Byte-swap AND shift into MSB for proper Little-Endian formatting
-                    hash_reg <= {bswap(sha_rdata), hash_reg[511:32]};
-                    
-                    if (sha_read_idx == 15) state <= ST_LOAD_REG_S;
-                    else begin
-                        sha_read_idx <= sha_read_idx + 1;
-                        state        <= ST_READ_HASH_REQ;
+                // Load 17 ED25519 registers, one per cycle
+                ST_LOAD_REGS: begin
+                    ed_ext_we <= 1;
+                    ed_dsel   <= 2'b01;
+                    load_idx  <= load_idx + 1;
+                    case (load_idx)
+                        0:  begin ed_dest<=24; ed_din<=CONST_ZERO;        end
+                        1:  begin ed_dest<=25; ed_din<=CONST_ONE;         end
+                        2:  begin ed_dest<=26; ed_din<=CURVE_D;           end
+                        3:  begin ed_dest<=27; ed_din<=CURVE_2D;          end
+                        4:  begin ed_dest<=28; ed_din<=SQRT_M1;           end
+                        5:  begin ed_dest<=4;  ed_din<=G_X;               end
+                        6:  begin ed_dest<=5;  ed_din<=G_Y;               end
+                        7:  begin ed_dest<=6;  ed_din<=G_Z;               end
+                        8:  begin ed_dest<=7;  ed_din<=G_T;               end
+                        9:  begin ed_dest<=10; ed_din<=MU_HI;             end
+                        10: begin ed_dest<=11; ed_din<=CURVE_L;           end
+                        11: begin ed_dest<=12; ed_din<=MU_LO;             end
+                        12: begin ed_dest<=23; ed_din<=s_reg;             end
+                        13: begin ed_dest<=20; ed_din<=r_reg;             end
+                        14: begin ed_dest<=21; ed_din<=pubkey_reg;        end
+                        15: begin ed_dest<=8;  ed_din<=hash_reg[255:0];   end
+                        16: begin ed_dest<=9;  ed_din<=hash_reg[511:256]; end
+                        default: ;
+                    endcase
+                    if (load_idx == 16) begin
+                        ed_ext_we <= 0;
+                        state     <= ST_WAIT_START;
                     end
                 end
 
-                // --- 5. Push Valid Data into Ed25519 Registers ---
-                ST_LOAD_REG_S: begin
-                    ed_ext_we       <= 1'b1;
-                    ed_ext_dest_sel <= 5'd23;    // Reg 23 = S
-                    ed_data_sel     <= 2'b01;    // Route from ext_data_1
-                    ed_ext_data_1   <= s_reg;
-                    state           <= ST_LOAD_REG_R;
-                end
-                ST_LOAD_REG_R: begin
-                    ed_ext_dest_sel <= 5'd20;    // Reg 20 = R
-                    ed_ext_data_1   <= r_reg;
-                    state           <= ST_LOAD_REG_A;
-                end
-                ST_LOAD_REG_A: begin
-                    ed_ext_dest_sel <= 5'd21;    // Reg 21 = PubKey
-                    ed_ext_data_1   <= pubkey_reg;
-                    state           <= ST_LOAD_REG_HLO;
-                end
-                ST_LOAD_REG_HLO: begin
-                    ed_ext_dest_sel <= 5'd8;     // Reg 8 = Hash Low
-                    ed_ext_data_1   <= hash_reg[255:0];
-                    state           <= ST_LOAD_REG_HHI;
-                end
-                ST_LOAD_REG_HHI: begin
-                    ed_ext_dest_sel <= 5'd9;     // Reg 9 = Hash High
-                    ed_ext_data_1   <= hash_reg[511:256];
-                    state           <= ST_ED_START;
-                end
-
-                // --- 6. Kick Off Verification ---
-                ST_ED_START: begin
-                    ed_ext_we <= 1'b0;  // Release override
-                    ed_start  <= 1'b1;
-                    state     <= ST_ED_WAIT;
-                end
-
-                ST_ED_WAIT: begin
-                    ed_start <= 1'b0;
-                    if (ed_done) begin
-                        demo_done       <= 1'b1;
-                        signature_valid <= ed_valid;
-                        state           <= ST_DONE;
+                ST_WAIT_START: begin
+                    ed_dsel <= 2'b00;
+                    if (start_latch || start_verify_i) begin
+                        start_latch <= 0;
+                        state       <= ST_ED_START;
                     end
                 end
 
-                ST_DONE: begin
-                    if (!start_demo) state <= ST_IDLE;
-                end
+                ST_ED_START: begin ed_start<=1; state<=ST_ED_WAIT; end
+                ST_ED_WAIT:  begin if (ed_done) state<=ST_DONE;    end
+                ST_DONE:     ; // single-use per reset
+
                 default: state <= ST_IDLE;
             endcase
         end
     end
+
 endmodule
