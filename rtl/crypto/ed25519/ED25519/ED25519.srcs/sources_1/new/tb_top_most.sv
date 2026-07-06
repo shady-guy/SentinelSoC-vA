@@ -27,12 +27,11 @@ module tb_top_most;
         otp_mem[7] = 32'h4087b234;
     end
 
-    // Registered Output
+    // Registered Output - Hold data until next read
     always_ff @(posedge clk) begin
-        if (otp_rd_en)
+        if (otp_rd_en) begin
             otp_data <= otp_mem[otp_addr];
-        else
-            otp_data <= 32'h0;
+        end
     end
 
     top_most dut (
