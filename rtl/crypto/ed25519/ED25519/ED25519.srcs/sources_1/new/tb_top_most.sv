@@ -93,14 +93,18 @@ module tb_top_most;
     end
 
     // Monitor Key Events & Register Dump
+    logic regs_dumped = 0;
+    
     always @(posedge clk) begin
         if (dut.sha_intr) begin
             $display("[%0t] EVENT       : SHA512 Interrupt Asserted (Hash Complete)", $time);
         end
-        if (otp_rd_en && !dut.otp_rd_en_o) begin // pulse detection
+        if (otp_rd_en && !dut.otp_rd_en_o) begin 
             $display("[%0t] EVENT       : OTP Read Started", $time);
         end
-        if (dut.state == 5'd16 && dut.ed_start == 1) begin // ST_ED_START
+        
+        // Trigger safely based on the string name of the state
+        if (!regs_dumped && dut.state.name() == "ST_ED_START") begin 
             $display("==================================================");
             $display("[%0t] PRE-VERIFICATION REGISTER DUMP:", $time);
             $display("S_REG      = %64x", dut.s_reg);
@@ -109,7 +113,9 @@ module tb_top_most;
             $display("HASH_REG   = %128x", dut.hash_reg);
             $display("==================================================");
             $display("[%0t] EVENT       : ED25519 Engine Started", $time);
+            regs_dumped = 1;
         end
+        
         if (verify_done && !dut.verify_done_o) begin
             $display("[%0t] EVENT       : ED25519 Engine Done | Sig Valid = %b", $time, sig_valid);
         end
