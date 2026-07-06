@@ -100,7 +100,7 @@ module top_most (
     // FSM States
     typedef enum logic [4:0] {
         ST_IDLE, ST_SHA_CFG_LEN, ST_SHA_CFG_CTRL, ST_SHA_POLL,
-        ST_RECV_S, ST_RECV_R,
+        ST_RECV_R, ST_RECV_S,
         ST_OTP_REQ, ST_OTP_LATCH, ST_BLK_POLL_OTP,
         ST_RECV_MSG, ST_BLK_POLL,
         ST_WAIT_INTR, ST_READ_HASH, ST_READ_HASH_LAST,
@@ -108,7 +108,6 @@ module top_most (
     } state_t;
     state_t state;
 
-    // Combinatorial pop evaluation for 1-cycle latency stream processing
     always_comb begin
         fifo_pop = 1'b0;
         if (!fifo_empty) begin
@@ -130,7 +129,6 @@ module top_most (
 
     logic start_latch, boot_q;
 
-    // FIXED: Combinational drop for instant deassertion
     assign boot_active_o = boot_q & ~ed_done; 
     assign otp_addr_o    = otp_idx;
 
@@ -160,7 +158,6 @@ module top_most (
                     end
                 end
 
-                // Configure SHA length then start
                 ST_SHA_CFG_LEN: begin
                     sha_addr<=6'h32; sha_wdata<=sha_len_reg; sha_wen<=1;
                     state <= ST_SHA_CFG_CTRL;
@@ -173,31 +170,31 @@ module top_most (
                     sha_addr <= 6'h21;
                     if (sha_rdata[0]) begin
                         word_cnt <= 0;
-                        state <= ST_RECV_S;
+                        state <= ST_RECV_R; // FIXED: Stream sends R first!
                     end
                 end
 
-                // Construct S Register (Right Shift + Byte Swap)
-                ST_RECV_S: begin
-                    if (!fifo_empty) begin
-                        s_reg <= {fifo_dout[7:0], fifo_dout[15:8], fifo_dout[23:16], fifo_dout[31:24], s_reg[255:32]}; 
-                        word_cnt <= word_cnt + 1;
-                        if (word_cnt == 7) state <= ST_RECV_R; 
-                    end
-                end
-
-                // Construct R Register and feed to SHA
+                // Construct R Register and feed to SHA (First 32 bytes)
                 ST_RECV_R: begin
                     if (!fifo_empty) begin
-                        r_reg       <= {fifo_dout[7:0], fifo_dout[15:8], fifo_dout[23:16], fifo_dout[31:24], r_reg[255:32]};
+                        r_reg       <= {fifo_dout, r_reg[255:32]};
                         sha_addr    <= 6'(blk_ptr);
-                        sha_wdata   <= fifo_dout; // Keep SHA feed exactly as is (no byte swap for SHA)
+                        sha_wdata   <= fifo_dout;
                         sha_wen     <= 1;
                         sha_fed     <= sha_fed + 1;
                         blk_ptr     <= blk_ptr + 1;
                         word_cnt    <= word_cnt + 1;
                         
-                        if (word_cnt == 15) state <= ST_OTP_REQ;
+                        if (word_cnt == 7) state <= ST_RECV_S; 
+                    end
+                end
+
+                // Construct S Register (Second 32 bytes)
+                ST_RECV_S: begin
+                    if (!fifo_empty) begin
+                        s_reg <= {fifo_dout, s_reg[255:32]}; 
+                        word_cnt <= word_cnt + 1;
+                        if (word_cnt == 15) state <= ST_OTP_REQ; 
                     end
                 end
 
@@ -207,9 +204,9 @@ module top_most (
                     state       <= ST_OTP_LATCH;
                 end
                 ST_OTP_LATCH: begin
-                    pubkey_reg <= {otp_data_i[7:0], otp_data_i[15:8], otp_data_i[23:16], otp_data_i[31:24], pubkey_reg[255:32]}; 
+                    pubkey_reg <= {otp_data_i, pubkey_reg[255:32]}; 
                     sha_addr   <= 6'(blk_ptr);
-                    sha_wdata  <= otp_data_i; // Keep SHA feed exactly as is (no byte swap for SHA)
+                    sha_wdata  <= otp_data_i;
                     sha_wen    <= 1;
                     sha_fed    <= sha_fed + 1;
                     blk_ptr    <= blk_ptr + 1;
@@ -232,13 +229,11 @@ module top_most (
                     end
                 end
 
-                // Poll SHA during OTP fetch if block boundary crossed
                 ST_BLK_POLL_OTP: begin
                     sha_addr <= 6'h21;
                     if (sha_rdata[0]) state <= ST_OTP_REQ;
                 end
 
-                // Feed remaining message payload directly to SHA
                 ST_RECV_MSG: begin
                     if (!fifo_empty) begin
                         sha_addr  <= 6'(blk_ptr);
@@ -255,13 +250,11 @@ module top_most (
                     end
                 end
 
-                // Generic block boundary poll
                 ST_BLK_POLL: begin
                     sha_addr <= 6'h21;
                     if (sha_rdata[0]) state <= ST_RECV_MSG;
                 end
 
-                // Wait for SHA Done
                 ST_WAIT_INTR: begin
                     if (sha_intr) begin
                         hash_idx <= 0;
