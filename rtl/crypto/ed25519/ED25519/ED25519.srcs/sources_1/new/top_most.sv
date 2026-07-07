@@ -13,7 +13,9 @@ module top_most (
     input  logic [31:0] otp_data_i,
     output logic        boot_active_o,
     output logic        verify_done_o,
-    output logic        signature_valid_o
+    output logic        signature_valid_o,
+
+//    input logic        intr_exception
 );
 
     // Ed25519 constants
@@ -37,7 +39,7 @@ module top_most (
     logic        sha_intr;
 
     sha512_top u_sha (
-        .clk(clk), .rst_n(rst_n),
+        .clk(clk), .rst_n(rst_n /* | intr_exception */),
         .addr_i(sha_addr), .wr_en_i(sha_wen),
         .wdata_i(sha_wdata), .rdata_o(sha_rdata), .intr_o(sha_intr)
     );
