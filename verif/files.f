@@ -23,4 +23,5 @@ rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/otp.sv
 rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/top_most.sv
 
 +incdir+verif/uart_verif/files
-rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/tb_top_most.sv
+rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/tb_top_most_un.sv
+# rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/tb_top_most.sv
