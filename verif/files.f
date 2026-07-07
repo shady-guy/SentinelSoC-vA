@@ -15,7 +15,6 @@ rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/SHA/sha512_msg_sched.sv
 rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/SHA/sha512_padder.sv
 rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/SHA/sha512_round.sv
 rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/SHA/sha512_top.sv
-rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/bram.sv
 rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/reg_file.sv
 rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/micro_seq.sv
 rtl/crypto/ed25519/ED25519/ED25519.srcs/sources_1/new/master_fsm.sv
