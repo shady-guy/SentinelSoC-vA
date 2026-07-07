@@ -280,8 +280,7 @@ module top_most (
                 end
                 
                 ST_READ_HASH_LAST: begin
-                    // LOCKED: Left-shift matches R/S/PUBKEY, reading raw data without byte-swapping
-                    hash_reg <= {hash_reg[479:0], sha_rdata};
+                    hash_reg <= {{sha_rdata[7:0], sha_rdata[15:8], sha_rdata[23:16], sha_rdata[31:24]}, hash_reg[511:32]};
                     load_idx <= 0;
                     state    <= ST_LOAD_REGS;
                 end
