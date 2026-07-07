@@ -161,10 +161,10 @@ module tb_top_most;
 
         $display("==================================================");
         if (sig_valid) begin
-            $display("FAILURE: signature_valid=1, signature verified correctly");
-        end else begin
-            $display("SUCCESS: signature_valid=0, verification failed on valid signature");
+            $display("FAILURE: signature_valid=1, invalid signature verified as correct");
             fail++;
+        end else begin
+            $display("SUCCESS: signature_valid=0, verification failed on invalid signature");
         end
 
         if (boot_active) begin
