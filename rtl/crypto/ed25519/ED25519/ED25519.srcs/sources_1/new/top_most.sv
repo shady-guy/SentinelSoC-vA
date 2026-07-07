@@ -178,7 +178,7 @@ module top_most (
                 ST_RECV_R: begin
                     if (!fifo_empty) begin
                         // LOCKED: Left-shift keeps original correct word ordering
-                        r_reg       <= {r_reg[223:0], fifo_dout};
+                        r_reg <= {{fifo_dout[7:0], fifo_dout[15:8], fifo_dout[23:16], fifo_dout[31:24]}, r_reg[255:32]};
                         sha_addr    <= 6'(blk_ptr);
                         sha_wdata   <= {fifo_dout[7:0], fifo_dout[15:8], fifo_dout[23:16], fifo_dout[31:24]};
                         sha_wen     <= 1;
@@ -194,7 +194,7 @@ module top_most (
                 ST_RECV_S: begin
                     if (!fifo_empty) begin
                         // LOCKED: Left-shift keeps original correct word ordering
-                        s_reg    <= {s_reg[223:0], fifo_dout}; 
+                        s_reg <= {{fifo_dout[7:0], fifo_dout[15:8], fifo_dout[23:16], fifo_dout[31:24]}, s_reg[255:32]};
                         word_cnt <= word_cnt + 1;
                         if (word_cnt == 15) state <= ST_OTP_REQ; 
                     end
@@ -207,7 +207,7 @@ module top_most (
                 end
                 ST_OTP_LATCH: begin
                     // LOCKED: Left-shift keeps original correct word ordering
-                    pubkey_reg <= {pubkey_reg[223:0], otp_data_i}; 
+                    pubkey_reg <= {{otp_data_i[7:0], otp_data_i[15:8], otp_data_i[23:16], otp_data_i[31:24]}, pubkey_reg[255:32]}; 
                     sha_addr   <= 6'(blk_ptr);
                     sha_wdata  <= {otp_data_i[7:0], otp_data_i[15:8], otp_data_i[23:16], otp_data_i[31:24]};
                     sha_wen    <= 1;
@@ -269,7 +269,7 @@ module top_most (
                 // Extract 512-bit Hash 
                 ST_READ_HASH: begin
                     // LOCKED: Left-shift matches R/S/PUBKEY, reading raw data without byte-swapping
-                    hash_reg <= {hash_reg[479:0], sha_rdata}; 
+                    hash_reg <= {{sha_rdata[7:0], sha_rdata[15:8], sha_rdata[23:16], sha_rdata[31:24]}, hash_reg[511:32]}; 
                     hash_idx <= hash_idx + 1;
                     if (hash_idx == 14) begin
                         sha_addr <= 6'h31;
