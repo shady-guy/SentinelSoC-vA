@@ -7,6 +7,7 @@ module top_most (
     input  logic        rst_n,
     input  logic [31:0] stream_data_i,  
     input  logic        stream_valid_i,
+    output logic        stream_ready_o,
     input  logic        start_verify_i, 
     output logic [2:0]  otp_addr_o,
     output logic        otp_rd_en_o,
@@ -70,6 +71,7 @@ module top_most (
     assign fifo_empty = (fifo_count == 0);
     assign fifo_full  = (fifo_count == 64);
     assign fifo_dout  = fifo_data[fifo_rd_ptr];
+    assign stream_ready_o = ~fifo_full;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
