@@ -179,7 +179,6 @@ module top_most (
                 // Construct R Register and feed to SHA (First 32 bytes)
                 ST_RECV_R: begin
                     if (!fifo_empty) begin
-                        // LOCKED: Left-shift keeps original correct word ordering
                         r_reg <= {{fifo_dout[7:0], fifo_dout[15:8], fifo_dout[23:16], fifo_dout[31:24]}, r_reg[255:32]};
                         sha_addr    <= 6'(blk_ptr);
                         sha_wdata   <= {fifo_dout[7:0], fifo_dout[15:8], fifo_dout[23:16], fifo_dout[31:24]};
@@ -195,7 +194,6 @@ module top_most (
                 // Construct S Register (Second 32 bytes)
                 ST_RECV_S: begin
                     if (!fifo_empty) begin
-                        // LOCKED: Left-shift keeps original correct word ordering
                         s_reg <= {{fifo_dout[7:0], fifo_dout[15:8], fifo_dout[23:16], fifo_dout[31:24]}, s_reg[255:32]};
                         word_cnt <= word_cnt + 1;
                         if (word_cnt == 15) state <= ST_OTP_REQ; 
@@ -208,7 +206,6 @@ module top_most (
                     state       <= ST_OTP_LATCH;
                 end
                 ST_OTP_LATCH: begin
-                    // LOCKED: Left-shift keeps original correct word ordering
                     pubkey_reg <= {{otp_data_i[7:0], otp_data_i[15:8], otp_data_i[23:16], otp_data_i[31:24]}, pubkey_reg[255:32]}; 
                     sha_addr   <= 6'(blk_ptr);
                     sha_wdata  <= {otp_data_i[7:0], otp_data_i[15:8], otp_data_i[23:16], otp_data_i[31:24]};

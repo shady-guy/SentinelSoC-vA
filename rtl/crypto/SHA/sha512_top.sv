@@ -208,7 +208,6 @@ module sha512_top (
     // Output Read Logic
     // --------------------------------------------------------
     logic ready;
-    // CHANGE: Allow testbench to know we are ready to receive the next block
     assign ready = (state == S_IDLE) || (state == S_RECV);
 
     always_comb begin
@@ -218,7 +217,7 @@ module sha512_top (
             else if (addr_i >= 6'h22 && addr_i <= 6'h31) begin
                 automatic logic [31:0] raw;
                 raw = addr_i[0] ? H[(addr_i-6'h22)>>1][31:0] : H[(addr_i-6'h22)>>1][63:32];
-                rdata_o = raw; // <--- CHANGED: Removed the `{raw[7:0], ...}` byte swap
+                rdata_o = raw; 
             end
     end
 endmodule
