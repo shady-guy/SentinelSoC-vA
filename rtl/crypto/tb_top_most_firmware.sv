@@ -72,6 +72,7 @@ module tb_top_most_firmware;
             $fclose(fd);
         end
     endtask
+    $display("[%0t] otp_mem post-program = %064x", $time, u_otp.otp_mem);
 
     // -----------------------------------------------------------------
     // Task: FIFO-aware flash streaming from flash.mem
