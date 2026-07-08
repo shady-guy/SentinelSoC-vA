@@ -11,6 +11,7 @@ module tb_top_most_firmware;
     logic [31:0] otp_data;
     logic        boot_active;
     logic        verify_done, sig_valid;
+    logic        stream_ready;
 
     always #5 clk = ~clk;
 
@@ -21,6 +22,7 @@ module tb_top_most_firmware;
         .clk(clk), .rst_n(rst_n),
         .stream_data_i(stream_data_i), .stream_valid_i(stream_valid_i),
         .start_verify_i(start_verify),
+        .stream_ready_o(stream_ready),
         .otp_addr_o(otp_addr), .otp_rd_en_o(otp_rd_en), .otp_data_i(otp_data),
         .boot_active_o(boot_active),
         .verify_done_o(verify_done), .signature_valid_o(sig_valid)
@@ -86,7 +88,7 @@ module tb_top_most_firmware;
             while (!$feof(fd)) begin
                 code = $fscanf(fd, "%h\n", word);
                 if (code != 1) continue;
-                while (dut.fifo_full) @(posedge clk);   // wait for room
+                while (!stream_ready) @(posedge clk);   // <-- was: dut.fifo_full
                 @(negedge clk);
                 stream_data_i  = word;
                 stream_valid_i = 1'b1;
@@ -114,12 +116,12 @@ module tb_top_most_firmware;
     // Monitor FIFO full toggling — confirms the hierarchical-peek backpressure
     // in stream_flash_mem is actually doing real work, not a no-op.
     int fifo_full_asserts = 0;
-    always @(posedge dut.fifo_full) begin
+    always @(negedge stream_ready) begin
         fifo_full_asserts++;
-        $display("[%0t] EVENT       : dut.fifo_full asserted (count=%0d)", $time, fifo_full_asserts);
+        $display("[%0t] EVENT       : stream_ready deasserted (count=%0d)", $time, fifo_full_asserts);
     end
-    always @(negedge dut.fifo_full) begin
-        $display("[%0t] EVENT       : dut.fifo_full deasserted", $time);
+    always @(posedge stream_ready) begin
+        $display("[%0t] EVENT       : stream_ready reasserted", $time);
     end
 
     // Monitor Key Events & Register Dump
