@@ -13,9 +13,8 @@ module top_most (
     input  logic [31:0] otp_data_i,
     output logic        boot_active_o,
     output logic        verify_done_o,
-    output logic        signature_valid_o,
-
-//    input logic        intr_exception
+//    input logic        intr_exception,
+    output logic        signature_valid_o
 );
 
     // Ed25519 constants
