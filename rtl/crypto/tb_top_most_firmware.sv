@@ -59,6 +59,7 @@ module tb_top_most_firmware;
             while (!$feof(fd)) begin
                 code = $fscanf(fd, "%h\n", word);
                 if (code != 1) continue;
+                $display("[%0t] OTP PROG: w=%0d word=%h code=%0d", $time, w, word, code);
                 for (b = 0; b < 32; b++) begin
                     @(negedge clk);
                     otp_prog_en   = 1'b1;
