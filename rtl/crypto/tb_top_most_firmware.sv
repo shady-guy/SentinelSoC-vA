@@ -41,6 +41,11 @@ module tb_top_most_firmware;
 
     // -----------------------------------------------------------------
     // Task: bit-serial OTP programming from pubkey.mem, then lock
+    // FIX (Bug 1): drive on @(negedge clk) instead of @(posedge clk).
+    // The otp module samples otp_prog_en/addr/data on posedge clk, so
+    // driving those same signals on posedge raced the sampling flop and
+    // otp_mem ended up all-X. negedge gives a full half-cycle of setup,
+    // matching how stream_flash_mem already drives stream_data_i/valid_i.
     // -----------------------------------------------------------------
     task automatic program_otp_from_file(string path);
         integer fd, code;
@@ -55,19 +60,19 @@ module tb_top_most_firmware;
                 code = $fscanf(fd, "%h\n", word);
                 if (code != 1) continue;
                 for (b = 0; b < 32; b++) begin
-                    @(posedge clk);
+                    @(negedge clk);
                     otp_prog_en   = 1'b1;
                     otp_prog_addr = w*32 + b;
                     otp_prog_data = word[b];
                 end
                 w++;
             end
-            @(posedge clk); otp_prog_en = 1'b0;
-            @(posedge clk);                    // lock
+            @(negedge clk); otp_prog_en = 1'b0;
+            @(negedge clk);                    // lock
             otp_prog_en   = 1'b1;
             otp_prog_addr = 9'h1FF;            // all-ones, out of valid 0-255 range
             otp_prog_data = 1'b1;
-            @(posedge clk); otp_prog_en = 1'b0;
+            @(negedge clk); otp_prog_en = 1'b0;
             otp_test_mode = 1'b0;
             $fclose(fd);
         end
