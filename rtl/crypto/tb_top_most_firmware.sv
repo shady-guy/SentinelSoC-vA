@@ -160,6 +160,14 @@ module tb_top_most_firmware;
     // -----------------------------------------------------------------
     int unsigned data_wait_iters = 0; // counts extra poll spins on DATA_IN handshake
 
+// -----------------------------------------------------------------
+    // Task: drive R_IN x8 / S_IN x8 / MSG_LEN / CTRL.start / DATA_IN
+    // -----------------------------------------------------------------
+    localparam int unsigned MAX_STATUS_SPINS = 100_000; // ~1ms of polling —
+                                                          // generous vs the
+                                                          // ~113-cycle SHA
+                                                          // block latency
+
     task automatic drive_flash_mem(string path, input bit corrupt_en = 0,
                                     input int corrupt_word_idx = 0);
         integer fd, code;
@@ -175,32 +183,29 @@ module tb_top_most_firmware;
             fd = $fopen(path, "r");
             if (fd == 0) $fatal(1, "Cannot open %s", path);
 
-            // word 0 — total SHA word count
             code = $fscanf(fd, "%h\n", msg_len_word);
             if (code != 1) $fatal(1, "flash.mem missing length word");
+            $display("[%0t] msg_len_word = %0d words", $time, msg_len_word);
 
-            // next 8 — R
             for (i = 0; i < 8; i++) begin
                 code = $fscanf(fd, "%h\n", word);
                 if (code != 1) $fatal(1, "flash.mem short on R words");
                 r_words[i] = word;
             end
-
-            // next 8 — S
             for (i = 0; i < 8; i++) begin
                 code = $fscanf(fd, "%h\n", word);
                 if (code != 1) $fatal(1, "flash.mem short on S words");
                 s_words[i] = word;
             end
 
-            // Firmware order: R_IN x8, S_IN x8, MSG_LEN, then CTRL.start
             for (i = 0; i < 8; i++) csr_write(RIN_OFF, r_words[i]);
             for (i = 0; i < 8; i++) csr_write(SIN_OFF, s_words[i]);
             csr_write(MSGLEN_OFF, msg_len_word);
-            csr_write(CTRL_OFF, 32'h1); // start
+            $display("[%0t] R_IN/S_IN/MSG_LEN written, dut.state=%0d", $time, dut.state);
 
-            // Remaining words = message body, fed one at a time behind
-            // STATUS.ready_for_word.
+            csr_write(CTRL_OFF, 32'h1); // start
+            $display("[%0t] CTRL.start written, dut.state=%0d", $time, dut.state);
+
             msg_word_idx = 0;
             while (!$feof(fd)) begin
                 code = $fscanf(fd, "%h\n", word);
@@ -209,21 +214,34 @@ module tb_top_most_firmware;
                 if (corrupt_en && msg_word_idx == corrupt_word_idx) begin
                     $display("INJECTING CORRUPTION: msg word %0d  %h -> %h",
                               msg_word_idx, word, word ^ 32'h0000_0001);
-                    word = word ^ 32'h0000_0001; // single bit flip — SHA-512
-                                                  // avalanche guarantees a
-                                                  // completely different hash
+                    word = word ^ 32'h0000_0001;
                 end
 
                 spins = 0;
                 csr_read(STATUS_OFF, status);
                 while (!status[ST_READY]) begin
                     spins++;
+                    if (spins == MAX_STATUS_SPINS) begin
+                        $display("STUCK waiting for STATUS.ready_for_word at msg_word_idx=%0d",
+                                  msg_word_idx);
+                        $display("  dut.state        = %0d", dut.state);
+                        $display("  dut.data_pending  = %0b", dut.data_pending);
+                        $display("  dut.blk_ptr       = %0d", dut.blk_ptr);
+                        $display("  dut.sha_fed       = %0d", dut.sha_fed);
+                        $display("  dut.sha_len_reg   = %0d", dut.sha_len_reg);
+                        $display("  dut.otp_idx       = %0d", dut.otp_idx);
+                        $display("  dut.r_idx         = %0d", dut.r_idx);
+                        $fatal(1, "drive_flash_mem: STATUS poll exceeded %0d iterations",
+                                MAX_STATUS_SPINS);
+                    end
                     csr_read(STATUS_OFF, status);
                 end
                 if (spins > 0) data_wait_iters += spins;
 
                 csr_write(DATAIN_OFF, word);
                 msg_word_idx++;
+                if (msg_word_idx % 1000 == 0)
+                    $display("[%0t] fed %0d message words", $time, msg_word_idx);
             end
 
             $fclose(fd);
