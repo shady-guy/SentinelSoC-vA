@@ -554,33 +554,6 @@ typedef struct packed {
     .isram_lock_o   ( ctrl_isram_lock )
   );
 
-  // ---------------------------------------------------------------------------
-  // Buffer block (OBI slave + AXI-Stream master)
-  // ---------------------------------------------------------------------------
-  soc_buffer u_buffer (
-    .clk_i          ( clk_i       ),
-    .rst_ni         ( rst_ni      ),
-
-    // OBI slave — CSR + data write port
-    .req_i          ( buf_req     ),
-    .we_i           ( buf_we      ),
-    .be_i           ( buf_be      ),
-    .addr_i         ( buf_addr    ),
-    .wdata_i        ( buf_wdata   ),
-    .gnt_o          ( buf_gnt     ),
-    .rvalid_o       ( buf_rvalid  ),
-    .rdata_o        ( buf_rdata   ),
-    .err_o          ( buf_err     ),
-
-    .accel_data_o  ( accel_data        ),
-    .accel_addr_o  ( accel_addr        ),
-    .accel_valid_o ( accel_valid       ),
-    .accel_data_i  ( 32'h0             ),
-    .accel_done_i  ( sha_verify_done   ),
-    // IRQ → PLIC
-    .irq_o          ( irq_buf     )
-  );
-
   logic [2:0]  otp_addr;
   logic        otp_rd_en;
   logic [31:0] otp_data;
@@ -589,9 +562,19 @@ typedef struct packed {
   top_most u_crypto (
     .clk               (clk_i),
     .rst_n             (rst_ni),
-    .stream_data_i     (accel_data),
-    .stream_valid_i    (accel_valid),
-    .stream_ready_o    (),                 // top_most has no backpressure output today
+
+    // CSR slave port — repointed from soc_buffer onto the existing
+    // buf_* decoder output (address range, byte enables, etc. unchanged)
+    .csr_req_i         (buf_req),
+    .csr_we_i          (buf_we),
+    .csr_be_i          (buf_be),
+    .csr_addr_i        (buf_addr),
+    .csr_wdata_i       (buf_wdata),
+    .csr_gnt_o         (buf_gnt),
+    .csr_rvalid_o      (buf_rvalid),
+    .csr_rdata_o       (buf_rdata),
+    .csr_err_o         (buf_err),
+
     .start_verify_i    (sha_start),
     .otp_addr_o        (otp_addr),
     .otp_rd_en_o       (otp_rd_en),
@@ -782,7 +765,7 @@ typedef struct packed {
     .irq_sources_i({5'h0, irq_sha, irq_buf, irq_timer_periph, irq_gpio, irq_qspi, irq_spi, irq_uart} ),
     .eip_targets_o(irq_external)  // Ibex irq_external_i
   );
-
+  assign irq_buf = 1'b0;
   // ---------------------------------------------------------------------------
   // CLINT stub
   // TODO: instantiate CLINT and connect mtime/mtimecmp registers
