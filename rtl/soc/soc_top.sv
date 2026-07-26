@@ -140,8 +140,35 @@ typedef struct packed {
   logic        dbg_we;
   logic [ 3:0] dbg_be;
   logic [31:0] dbg_wdata;
+  logic        dbg_gnt;
   logic        dbg_rvalid;
   logic [31:0] dbg_rdata;
+
+  // CONFIRMED (read dm_top.sv/dm_mem.sv directly): the slave port has no
+  // gnt or rvalid at all — just slave_req_i/we_i/addr_i/be_i/wdata_i ->
+  // slave_rdata_o. dm_mem's read path (rdata_q/fwd_rom_q/word_enable32_q,
+  // all registered every cycle off req_i, no stall logic anywhere) is a
+  // fixed single-cycle-latency, always-accepted memory. So:
+  //   - dbg_gnt = 1'b1 is correct as-is, not a placeholder to replace.
+  //   - dbg_rvalid must be generated locally as dbg_req delayed by one
+  //     cycle (dm_top has no rvalid port to source it from).
+  assign dbg_gnt = 1'b1;
+
+  logic dbg_rvalid_q;
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) dbg_rvalid_q <= 1'b0;
+    else         dbg_rvalid_q <= dbg_req;
+  end
+  assign dbg_rvalid = dbg_rvalid_q;
+
+  // Core-halted-in-debug-mode status, feeds soc_addr_decode.dbg_mode_i
+  // (Req 1-4 CSR/ISRAM-write gating). Sourced from dm_top's new halted_o
+  // port (added directly to dm_top.sv, wired from dm_mem's pre-existing
+  // internal halted signal — see dm_top.sv for the one-line addition).
+  logic        dm_halted;
+  logic        dbg_mode;
+  assign dbg_mode = dm_halted; // NrHarts=1, so this is hart 0's halted bit
+
   // Debugger Signals 
   logic        debug_req_raw;
   logic        debug_req_gated;
@@ -153,6 +180,12 @@ typedef struct packed {
   logic [40:0] dmi_req_data;
   logic        dmi_resp_valid, dmi_resp_ready;
   logic [33:0] dmi_resp_data;
+  // Glitch-free reset pulsed by dmi_jtag for one clk_i cycle on POR,
+  // TestLogicReset, or a dmihardreset DTMCS write. Must feed dm_top's
+  // dmi_rst_ni so a JTAG-side reset actually clears the DM's DMI-facing
+  // state — previously unconnected, with dm_top.dmi_rst_ni tied to the
+  // chip reset instead (see both instantiations below).
+  logic        dmi_rst_n;
 
   // Security Gating: Tie to 0 for development. 
   // Later, tie to SHA valid signal to block debug on boot.
@@ -250,6 +283,7 @@ typedef struct packed {
 
   // ISRAM write lock from control registers
   logic        ctrl_isram_lock;
+  logic ctrl_boot_done;
 
   // ---------------------------------------------------------------------------
   // IRQ lines from peripherals to PLIC
@@ -286,8 +320,14 @@ typedef struct packed {
     .BranchPredictor  ( 1'b0          ),
     .DbgTriggerEn     ( 1'b0          ),
     .SecureIbex       ( 1'b0          ),
-    .DmHaltAddr       ( 32'h1A110800  ), // standard DM halt addr — update with riscv_dbg base
-    .DmExceptionAddr  ( 32'h1A110808  )
+    .DmHaltAddr       ( 32'h1A110800  ), // = DmBaseAddress + dm::HaltAddress (0x800)
+    // CONFIRMED against dm_pkg.sv: HaltAddress=0x800, ResumeAddress=
+    // HaltAddress+8=0x808, ExceptionAddress=HaltAddress+16=0x810. This was
+    // previously wired to 0x808 (ResumeAddress) instead of 0x810
+    // (ExceptionAddress) — an exception taken during a program-buffer/
+    // abstract-command sequence would have jumped into the Resume entry
+    // point instead of the Exception handler.
+    .DmExceptionAddr  ( 32'h1A110810  )
   ) u_ibex_top (
     .clk_i                      ( clk_i            ),
     .rst_ni                     ( rst_ni            ),
@@ -366,111 +406,155 @@ typedef struct packed {
   // ---------------------------------------------------------------------------
   // Address decoder + fetch demux
   // ---------------------------------------------------------------------------
-  soc_addr_decode u_addr_decode (
-    .clk_i              ( clk_i              ),
-    .rst_ni             ( rst_ni             ),
+soc_addr_decode #(
+  .BOOTROM_BASE ( 32'h0000_0000 ),
+  .BOOTROM_MASK ( 32'hFFFF_F000 ),
+  .ISRAM_BASE   ( 32'h0001_0000 ),
+  .ISRAM_MASK   ( 32'hFFFF_F000 ),
+  .DSRAM_BASE   ( 32'h0002_0000 ),
+  .DSRAM_MASK   ( 32'hFFFF_F000 ),
+  .CTRL_BASE    ( 32'h0003_0000 ),
+  .CTRL_MASK    ( 32'hFFFF_F000 ),
+  .BUF_BASE     ( 32'h0004_0000 ),
+  .BUF_MASK     ( 32'hFFFF_F000 ),
+  .SHA_BASE     ( 32'h0005_0000 ),
+  .SHA_MASK     ( 32'hFFFF_F000 ),
+  .PLIC_BASE    ( 32'h0C00_0000 ),   
+  .PLIC_MASK    ( 32'hFFC0_0000 ),   
+  .DBG_BASE     ( 32'h1A11_0000 ),
+  .DBG_MASK     ( 32'hFFFF_0000 ),
+  .APB_BASE     ( 32'h1000_0000 ),
+  .APB_MASK     ( 32'hF000_0000 ),
+  .NumMaxTrans  ( 2 )
+) u_addr_decode (
+  .clk_i  ( clk_i  ),
+  .rst_ni ( rst_ni ),
 
-    // Ibex instruction fetch
-    .instr_req_i        ( instr_req          ),
-    .instr_gnt_o        ( instr_gnt          ),
-    .instr_rvalid_o     ( instr_rvalid       ),
-    .instr_addr_i       ( instr_addr         ),
-    .instr_rdata_o      ( instr_rdata        ),
-    .instr_err_o        ( instr_err          ),
+  // Ibex instruction fetch
+  .instr_req_i    ( instr_req    ),
+  .instr_gnt_o    ( instr_gnt    ),
+  .instr_rvalid_o ( instr_rvalid ),
+  .instr_addr_i   ( instr_addr   ),
+  .instr_rdata_o  ( instr_rdata  ),
+  .instr_err_o    ( instr_err    ),
 
-    // Ibex data
-    .data_req_i         ( data_req           ),
-    .data_gnt_o         ( data_gnt           ),
-    .data_rvalid_o      ( data_rvalid        ),
-    .data_we_i          ( data_we            ),
-    .data_be_i          ( data_be            ),
-    .data_addr_i        ( data_addr          ),
-    .data_wdata_i       ( data_wdata         ),
-    .data_rdata_o       ( data_rdata         ),
-    .data_err_o         ( data_err           ),
+  // Ibex data
+  .data_req_i    ( data_req    ),
+  .data_gnt_o    ( data_gnt    ),
+  .data_rvalid_o ( data_rvalid ),
+  .data_we_i     ( data_we     ),
+  .data_be_i     ( data_be     ),
+  .data_addr_i   ( data_addr   ),
+  .data_wdata_i  ( data_wdata  ),
+  .data_rdata_o  ( data_rdata  ),
+  .data_err_o    ( data_err    ),
 
-    // ISRAM lock
-    .ctrl_isram_lock_i  ( ctrl_isram_lock    ),
+  // BootROM
+  .bootrom_req_o    ( bootrom_req    ),
+  .bootrom_gnt_i    ( bootrom_gnt    ),
+  .bootrom_rvalid_i ( bootrom_rvalid ),
+  .bootrom_addr_o   ( bootrom_addr   ),
+  .bootrom_we_o     ( bootrom_we     ),
+  .bootrom_be_o     ( bootrom_be     ),
+  .bootrom_wdata_o  ( bootrom_wdata  ),
+  .bootrom_rdata_i  ( bootrom_rdata  ),
+  .bootrom_err_i    ( bootrom_err    ),
 
-    // Slaves
-    .bootrom_req_o      ( bootrom_req        ),
-    .bootrom_gnt_i      ( bootrom_gnt        ),
-    .bootrom_rvalid_i   ( bootrom_rvalid     ),
-    .bootrom_addr_o     ( bootrom_addr       ),
-    .bootrom_we_o       ( bootrom_we         ),
-    .bootrom_be_o       ( bootrom_be         ),
-    .bootrom_wdata_o    ( bootrom_wdata      ),
-    .bootrom_rdata_i    ( bootrom_rdata      ),
-    .bootrom_err_i      ( bootrom_err        ),
+  // ISRAM
+  .isram_req_o       ( isram_req    ),
+  .isram_gnt_i       ( isram_gnt    ),
+  .isram_rvalid_i    ( isram_rvalid ),
+  .isram_addr_o      ( isram_addr   ),
+  .isram_we_o        ( isram_we     ),
+  .isram_be_o        ( isram_be     ),
+  .isram_wdata_o     ( isram_wdata  ),
+  .isram_rdata_i     ( isram_rdata  ),
+  .isram_err_i       ( isram_err    ),
+  .ctrl_isram_lock_i ( ctrl_isram_lock ),
 
-    .isram_req_o        ( isram_req          ),
-    .isram_gnt_i        ( isram_gnt          ),
-    .isram_rvalid_i     ( isram_rvalid       ),
-    .isram_addr_o       ( isram_addr         ),
-    .isram_we_o         ( isram_we           ),
-    .isram_be_o         ( isram_be           ),
-    .isram_wdata_o      ( isram_wdata        ),
-    .isram_rdata_i      ( isram_rdata        ),
-    .isram_err_i        ( isram_err          ),
+  // Access-control inputs — NEW connections, not present in the
+  // instantiation shown earlier; needed for priv-gating (CTRL/BUF/SHA)
+  // and ISRAM fetch-verification to actually function.
+  .boot_done_i  ( ctrl_boot_done   ), 
+  .dbg_mode_i   ( dbg_mode         ), 
+  .fw_verified_i ( sha_signature_valid ),
 
-    .dsram_req_o        ( dsram_req          ),
-    .dsram_gnt_i        ( dsram_gnt          ),
-    .dsram_rvalid_i     ( dsram_rvalid       ),
-    .dsram_addr_o       ( dsram_addr         ),
-    .dsram_we_o         ( dsram_we           ),
-    .dsram_be_o         ( dsram_be           ),
-    .dsram_wdata_o      ( dsram_wdata        ),
-    .dsram_rdata_i      ( dsram_rdata        ),
-    .dsram_err_i        ( dsram_err          ),
+  // DSRAM
+  .dsram_req_o    ( dsram_req    ),
+  .dsram_gnt_i    ( dsram_gnt    ),
+  .dsram_rvalid_i ( dsram_rvalid ),
+  .dsram_addr_o   ( dsram_addr   ),
+  .dsram_we_o     ( dsram_we     ),
+  .dsram_be_o     ( dsram_be     ),
+  .dsram_wdata_o  ( dsram_wdata  ),
+  .dsram_rdata_i  ( dsram_rdata  ),
+  .dsram_err_i    ( dsram_err    ),
 
-    .ctrl_req_o         ( ctrl_req           ),
-    .ctrl_gnt_i         ( ctrl_gnt           ),
-    .ctrl_rvalid_i      ( ctrl_rvalid        ),
-    .ctrl_addr_o        ( ctrl_addr          ),
-    .ctrl_we_o          ( ctrl_we            ),
-    .ctrl_be_o          ( ctrl_be            ),
-    .ctrl_wdata_o       ( ctrl_wdata         ),
-    .ctrl_rdata_i       ( ctrl_rdata         ),
-    .ctrl_err_i         ( ctrl_err           ),
+  // Control Registers (privileged)
+  .ctrl_req_o    ( ctrl_req    ),
+  .ctrl_gnt_i    ( ctrl_gnt    ),
+  .ctrl_rvalid_i ( ctrl_rvalid ),
+  .ctrl_addr_o   ( ctrl_addr   ),
+  .ctrl_we_o     ( ctrl_we     ),
+  .ctrl_be_o     ( ctrl_be     ),
+  .ctrl_wdata_o  ( ctrl_wdata  ),
+  .ctrl_rdata_i  ( ctrl_rdata  ),
+  .ctrl_err_i    ( ctrl_err    ),
 
-    .buf_req_o          ( buf_req            ),
-    .buf_gnt_i          ( buf_gnt            ),
-    .buf_rvalid_i       ( buf_rvalid         ),
-    .buf_addr_o         ( buf_addr           ),
-    .buf_we_o           ( buf_we             ),
-    .buf_be_o           ( buf_be             ),
-    .buf_wdata_o        ( buf_wdata          ),
-    .buf_rdata_i        ( buf_rdata          ),
-    .buf_err_i          ( buf_err            ),
+  // Buffer CSR (privileged)
+  .buf_req_o    ( buf_req    ),
+  .buf_gnt_i    ( buf_gnt    ),
+  .buf_rvalid_i ( buf_rvalid ),
+  .buf_addr_o   ( buf_addr   ),
+  .buf_we_o     ( buf_we     ),
+  .buf_be_o     ( buf_be     ),
+  .buf_wdata_o  ( buf_wdata  ),
+  .buf_rdata_i  ( buf_rdata  ),
+  .buf_err_i    ( buf_err    ),
 
-    .sha_req_o          ( sha_req            ),
-    .sha_gnt_i          ( sha_gnt            ),
-    .sha_rvalid_i       ( sha_rvalid         ),
-    .sha_addr_o         ( sha_addr           ),
-    .sha_we_o           ( sha_we             ),
-    .sha_be_o           ( sha_be             ),
-    .sha_wdata_o        ( sha_wdata          ),
-    .sha_rdata_i        ( sha_rdata          ),
-    .sha_err_i          ( sha_err            ),
+  // SHA + ED25519 CSR (privileged)
+  .sha_req_o    ( sha_req    ),
+  .sha_gnt_i    ( sha_gnt    ),
+  .sha_rvalid_i ( sha_rvalid ),
+  .sha_addr_o   ( sha_addr   ),
+  .sha_we_o     ( sha_we     ),
+  .sha_be_o     ( sha_be     ),
+  .sha_wdata_o  ( sha_wdata  ),
+  .sha_rdata_i  ( sha_rdata  ),
+  .sha_err_i    ( sha_err    ),
 
-    .apb_req_o          ( apb_bridge_req     ),
-    .apb_gnt_i          ( apb_bridge_gnt     ),
-    .apb_rvalid_i       ( apb_bridge_rvalid  ),
-    .apb_addr_o         ( apb_bridge_addr    ),
-    .apb_we_o           ( apb_bridge_we      ),
-    .apb_be_o           ( apb_bridge_be      ),
-    .apb_wdata_o        ( apb_bridge_wdata   ),
-    .apb_rdata_i        ( apb_bridge_rdata   ),
-    .apb_err_i          ( apb_bridge_err     ),
+  //PLIC
+  .plic_req_o    ( plic_req    ),
+  .plic_gnt_i    ( plic_gnt    ),
+  .plic_rvalid_i ( plic_rvalid ),
+  .plic_addr_o   ( plic_addr   ),
+  .plic_we_o     ( plic_we     ),
+  .plic_be_o     ( plic_be     ),
+  .plic_wdata_o  ( plic_wdata  ),
+  .plic_rdata_i  ( plic_rdata  ),
+  .plic_err_i    ( plic_err    ),
 
-    .dbg_req_o    ( dbg_req    ),
-    .dbg_addr_o   ( dbg_addr   ),
-    .dbg_we_o     ( dbg_we     ),
-    .dbg_be_o     ( dbg_be     ),
-    .dbg_wdata_o  ( dbg_wdata  ),
-    .dbg_rvalid_i ( dbg_rvalid ),
-    .dbg_rdata_i  ( dbg_rdata  )
-  );
+  // OBI-to-APB bridge
+  .apb_req_o    ( apb_bridge_req    ),
+  .apb_gnt_i    ( apb_bridge_gnt    ),
+  .apb_rvalid_i ( apb_bridge_rvalid ),
+  .apb_addr_o   ( apb_bridge_addr   ),
+  .apb_we_o     ( apb_bridge_we     ),
+  .apb_be_o     ( apb_bridge_be     ),
+  .apb_wdata_o  ( apb_bridge_wdata  ),
+  .apb_rdata_i  ( apb_bridge_rdata  ),
+  .apb_err_i    ( apb_bridge_err    ),
+
+  // Debug target interface (dm_top slave port)
+  .dbg_req_o    ( dbg_req    ),
+  .dbg_addr_o   ( dbg_addr   ),
+  .dbg_we_o     ( dbg_we     ),
+  .dbg_be_o     ( dbg_be     ),
+  .dbg_wdata_o  ( dbg_wdata  ),
+  .dbg_gnt_i    ( dbg_gnt    ),
+  .dbg_rvalid_i ( dbg_rvalid ),
+  .dbg_rdata_i  ( dbg_rdata  )
+);
 
   // ---------------------------------------------------------------------------
   // BootROM — read-only, initialised from bootrom.hex at synthesis
@@ -551,8 +635,10 @@ typedef struct packed {
     .err_o          ( ctrl_err        ),
     .crypto_verified_i ( sha_signature_valid ),
     // Control outputs
+    .boot_done_o    ( ctrl_boot_done ),
     .isram_lock_o   ( ctrl_isram_lock )
   );
+
 
   logic [2:0]  otp_addr;
   logic        otp_rd_en;
@@ -753,7 +839,7 @@ typedef struct packed {
   plic_top #(
     .N_SOURCE (12),
     .N_TARGET (1),
-    .MAX_PRIO (7),
+    .MAX_PRIO (3),
     .reg_req_t (plic_reg_req_t),
     .reg_rsp_t (plic_reg_rsp_t)
   ) u_plic (
@@ -765,7 +851,7 @@ typedef struct packed {
     .irq_sources_i({5'h0, irq_sha, irq_buf, irq_timer_periph, irq_gpio, irq_qspi, irq_spi, irq_uart} ),
     .eip_targets_o(irq_external)  // Ibex irq_external_i
   );
-  assign irq_buf = 1'b0;
+
   // ---------------------------------------------------------------------------
   // CLINT stub
   // TODO: instantiate CLINT and connect mtime/mtimecmp registers
@@ -788,6 +874,7 @@ typedef struct packed {
     .clk_i            (clk_i),
     .rst_ni           (rst_ni),
     .testmode_i       (1'b0),
+    .dmi_rst_no       (dmi_rst_n),
     
     // JTAG pins
     .tck_i            (jtag_tck_i),
@@ -810,17 +897,44 @@ typedef struct packed {
   // RISC-V Debug Module (DM)
   // ---------------------------------------------------------------------------
   dm_top #(
-    .NrHarts(1),
-    .BusWidth(32)
+    .NrHarts       ( 1              ),
+    .BusWidth      ( 32             ),
+    // CONFIRMED against dm_pkg.sv: HaltAddress=0x800, ResumeAddress=0x808,
+    // ExceptionAddress=0x810, all relative to DmBaseAddress — so this must
+    // be 0x1A11_0000 to match DBG_BASE in soc_addr_decode and
+    // DmHaltAddr/DmExceptionAddr on the Ibex side above.
+    .DmBaseAddress ( 32'h1A11_0000  )
   ) u_dm_top (
     .clk_i            (clk_i),
     .rst_ni           (rst_ni),
     .testmode_i       (1'b0),
+    .next_dm_addr_i   (32'h0),
     .ndmreset_o       (ndmreset),
+    // FIX: was left unconnected — required input, causes X-propagation
+    // through the ndmreset handshake in i_dm_csrs. Tied to 1'b1 (ack
+    // always asserted) as a placeholder since this SoC doesn't yet have
+    // a dedicated reset controller generating a real ack pulse. Revisit
+    // once/if one exists — a real ack should follow the actual duration
+    // of your non-debug-module reset, not be permanently asserted.
+    .ndmreset_ack_i   (1'b1),
     .dmactive_o       (),
     .debug_req_o      (debug_req_raw),
+    // New port added to dm_top.sv: per-hart halted status, sourced from
+    // dm_mem's pre-existing internal halted signal. Feeds dbg_mode above.
+    .halted_o         (dm_halted),
     .unavailable_i    (1'b0),
-    
+    // CONFIRMED against dm_pkg.sv/dm_mem.sv: dm_mem itself doesn't consume
+    // hartinfo_i for the abstract-command flow (HasSndScratch is derived
+    // locally from DmBaseAddress != 0), so this only matters for what
+    // OpenOCD reads back via the Hartinfo CSR. Values below match the
+    // HasSndScratch=1 config actually in use (DmBaseAddress=0x1A110000):
+    // nscratch=2 (dscratch0/dscratch1 both used), dataaccess=1 (data
+    // registers are memory-mapped, not CSR-shadowed), datasize=
+    // dm::DataCount, dataaddr=dm::DataAddr.
+    .hartinfo_i       ('{nscratch: 4'd2, dataaccess: 1'b1,
+                          datasize: dm::DataCount, dataaddr: dm::DataAddr,
+                          default: '0}),
+
     // DMI Interface
     .dmi_req_i        (dmi_req_data),
     .dmi_req_valid_i  (dmi_req_valid),
@@ -828,26 +942,44 @@ typedef struct packed {
     .dmi_resp_o       (dmi_resp_data),
     .dmi_resp_valid_o (dmi_resp_valid),
     .dmi_resp_ready_i (dmi_resp_ready),
-    
-    // Target Memory Interface (Ibex reads from this when halted)
-    // TODO: Connect these to your soc_addr_decode for address 0x1A11_0000
+    .dmi_rst_ni       (dmi_rst_n),
+
+    // Target Memory Interface — routed through soc_addr_decode's
+    // DBG range (0x1A11_0000, see u_addr_decode below). Shared between
+    // fetch-path (debug ROM / program buffer instruction fetch) and
+    // data-path (abstract data registers) via the dbg arbiter in
+    // soc_addr_decode — see that file for details.
+    //
+    // CONFIRMED: dm_top's slave port has no gnt/rvalid at all (just
+    // slave_req_i/we_i/addr_i/be_i/wdata_i -> slave_rdata_o). dbg_rvalid
+    // is generated locally above (dbg_req delayed one cycle, matching
+    // dm_mem's fixed single-cycle read latency); dbg_gnt is tied to 1
+    // above for the same reason.
     .slave_req_i    ( dbg_req    ),
     .slave_we_i     ( dbg_we     ),
     .slave_addr_i   ( dbg_addr   ),
     .slave_wdata_i  ( dbg_wdata  ),
     .slave_be_i     ( dbg_be     ),
-    .slave_rvalid_o ( dbg_rvalid ),
     .slave_rdata_o  ( dbg_rdata  ),
-    
-    // SBA Master Interface (TIED OFF for simple configuration!)
-    .master_req_o     (),
-    .master_add_o     (),
-    .master_we_o      (),
-    .master_wdata_o   (),
-    .master_be_o      (),
-    .master_gnt_i     (1'b0),
-    .master_r_valid_i (1'b0),
-    .master_r_rdata_i (32'h0)
+
+    // SBA Master Interface — deliberately tied off (see earlier
+    // discussion: leaving SBA disabled is the intended security posture
+    // for this SoC, not a stopgap). master_r_err_i/master_r_other_err_i
+    // are required inputs and were previously left unconnected — tied
+    // to 1'b0 here; harmless since the port is otherwise fully disabled
+    // (master_gnt_i=0 means dm_sba never proceeds far enough to sample
+    // these in practice, but leaving them floating is still bad
+    // practice / X-propagation risk).
+    .master_req_o          (),
+    .master_add_o          (),
+    .master_we_o           (),
+    .master_wdata_o        (),
+    .master_be_o           (),
+    .master_gnt_i          (1'b0),
+    .master_r_valid_i      (1'b0),
+    .master_r_err_i        (1'b0),
+    .master_r_other_err_i  (1'b0),
+    .master_r_rdata_i      (32'h0)
   );
 
 endmodule
