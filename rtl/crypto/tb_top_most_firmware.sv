@@ -66,7 +66,7 @@ module tb_top_most_firmware;
     );
 
     // -----------------------------------------------------------------
-    // Real OTP module — unchanged, still driven directly (not via CSR)
+    // Real OTP module — driven directly (not via CSR)
     // -----------------------------------------------------------------
     logic       otp_prog_en, otp_prog_data, otp_test_mode;
     logic [8:0] otp_prog_addr;
@@ -80,9 +80,6 @@ module tb_top_most_firmware;
 
     // -----------------------------------------------------------------
     // Task: bit-serial OTP programming from pubkey.mem, then lock.
-    // Unchanged from the streaming-era TB — OTP programming never went
-    // through the accelerator's front-end, so this isn't affected by
-    // the CSR refactor.
     // -----------------------------------------------------------------
     task automatic program_otp_from_file(string path);
         integer fd, code;
@@ -152,13 +149,19 @@ module tb_top_most_firmware;
 
     // -----------------------------------------------------------------
     // Task: drive R_IN x8 / S_IN x8 / MSG_LEN / CTRL.start / DATA_IN
-    // from flash.mem, exactly mirroring the BootROM pseudocode:
+    // from flash.mem, mirroring the BootROM pseudocode:
     //   file layout: [word0 = total word count fed to SHA (R+pubkey+msg)]
     //                [8 words R] [8 words S] [remaining words = message]
+    //
+    // corrupt_en flips one bit of message word corrupt_word_idx
+    // (0-indexed within the message body only — R/S/pubkey/len stay
+    // untouched) to simulate tampered/wrong firmware while keeping a
+    // signature that was valid for the ORIGINAL bytes.
     // -----------------------------------------------------------------
     int unsigned data_wait_iters = 0; // counts extra poll spins on DATA_IN handshake
 
-    task automatic drive_flash_mem(string path);
+    task automatic drive_flash_mem(string path, input bit corrupt_en = 0,
+                                    input int corrupt_word_idx = 0);
         integer fd, code;
         logic [31:0] word;
         logic [31:0] msg_len_word;
@@ -167,6 +170,7 @@ module tb_top_most_firmware;
         logic [31:0] status;
         int i;
         int spins;
+        int msg_word_idx;
         begin
             fd = $fopen(path, "r");
             if (fd == 0) $fatal(1, "Cannot open %s", path);
@@ -196,11 +200,19 @@ module tb_top_most_firmware;
             csr_write(CTRL_OFF, 32'h1); // start
 
             // Remaining words = message body, fed one at a time behind
-            // STATUS.ready_for_word — this is the actual CPU-paced
-            // single-word handshake under test.
+            // STATUS.ready_for_word.
+            msg_word_idx = 0;
             while (!$feof(fd)) begin
                 code = $fscanf(fd, "%h\n", word);
                 if (code != 1) continue;
+
+                if (corrupt_en && msg_word_idx == corrupt_word_idx) begin
+                    $display("INJECTING CORRUPTION: msg word %0d  %h -> %h",
+                              msg_word_idx, word, word ^ 32'h0000_0001);
+                    word = word ^ 32'h0000_0001; // single bit flip — SHA-512
+                                                  // avalanche guarantees a
+                                                  // completely different hash
+                end
 
                 spins = 0;
                 csr_read(STATUS_OFF, status);
@@ -211,35 +223,53 @@ module tb_top_most_firmware;
                 if (spins > 0) data_wait_iters += spins;
 
                 csr_write(DATAIN_OFF, word);
+                msg_word_idx++;
             end
 
             $fclose(fd);
         end
     endtask
 
+    // -----------------------------------------------------------------
+    // Task: full hardware reset + OTP re-program, so a second scenario
+    // can run cleanly in the same simulation. sha512_top / top_ed25519
+    // have no standalone soft-reset of their own — CTRL.soft_reset only
+    // rewinds top_most's FSM, not the SHA/ED25519 IP's internal state —
+    // so a real rst_n pulse is the safe way to get a clean slate between
+    // back-to-back test cases.
+    // -----------------------------------------------------------------
+    task automatic reset_and_reprogram_otp();
+        begin
+            rst_n = 0;
+            repeat(4) @(posedge clk);
+            @(negedge clk); rst_n = 1;
+            repeat(2) @(posedge clk);
+            program_otp_from_file("rtl/crypto/scripts/mems/pubkey.mem");
+            repeat(5) @(posedge clk);
+        end
+    endtask
+
     int fail = 0;
 
     initial begin
-        $display("==================================================");
-        $display("Starting Secure Boot Simulation (CSR Firmware TB)...");
-        $display("==================================================");
-
         csr_req_i = 0; csr_we_i = 0; csr_be_i = 4'h0;
         csr_addr_i = 0; csr_wdata_i = 0;
         start_verify = 0;
         otp_prog_en = 0; otp_prog_addr = 0; otp_prog_data = 0; otp_test_mode = 0;
 
+        // ===============================================================
+        // Scenario 1: correct firmware, correct R/S/pubkey — expect PASS
+        // ===============================================================
+        $display("==================================================");
+        $display("Starting Scenario 1: valid firmware, expect SUCCESS...");
+        $display("==================================================");
+
         @(negedge clk); rst_n = 1;   // negedge avoids racing otp's sync-reset flop
         repeat(2) @(posedge clk);
 
-        // 1. Program OTP with the pubkey generated by sign_firmware.py / build_mem.py
         program_otp_from_file("rtl/crypto/scripts/mems/pubkey.mem");
-
         repeat(5) @(posedge clk);
 
-        // 2. Drive R_IN/S_IN/MSG_LEN/CTRL.start, then stream DATA_IN
-        //    word-by-word behind STATUS.ready_for_word — replaces the old
-        //    FIFO-backpressured stream_flash_mem task.
         drive_flash_mem("rtl/crypto/scripts/mems/flash.mem");
 
         // Allow time for SHA processing and OTP reads after the last
@@ -264,10 +294,10 @@ module tb_top_most_firmware;
         end
 
         if (boot_active) begin
-            $display("FAILURE: boot_active did not deassert after verify_done");
+            $display("FAILURE: boot_active did not deassert after verify_done (scenario 1)");
             fail++;
         end else begin
-            $display("PASS: boot_active correctly deasserted after verify_done");
+            $display("PASS: boot_active correctly deasserted after verify_done (scenario 1)");
         end
 
         if (data_wait_iters == 0) begin
@@ -279,15 +309,55 @@ module tb_top_most_firmware;
             $display("      CPU-paced ready/busy backpressure is real.");
         end
 
+        // ===============================================================
+        // Scenario 2: same valid R/S/pubkey/MSG_LEN, but one word of the
+        // firmware body is bit-flipped before hashing. Signature was
+        // computed over the ORIGINAL firmware, so this must fail.
+        // ===============================================================
+        $display("==================================================");
+        $display("Starting Scenario 2: corrupted firmware, expect FAILURE...");
+        $display("==================================================");
+
+        reset_and_reprogram_otp();
+
+        drive_flash_mem("rtl/crypto/scripts/mems/flash.mem",
+                         .corrupt_en(1), .corrupt_word_idx(0));
+
+        repeat(20000) @(posedge clk);
+
+        @(posedge clk); #1;
+        start_verify = 1;
+        @(posedge clk); #1;
+        start_verify = 0;
+
+        wait(verify_done);
+        @(posedge clk);
+
+        $display("==================================================");
+        if (!sig_valid) begin
+            $display("SUCCESS: signature_valid=0, corrupted firmware correctly rejected");
+        end else begin
+            $display("FAILURE: signature_valid=1, corrupted firmware WAS ACCEPTED — bug");
+            fail++;
+        end
+
+        if (boot_active) begin
+            $display("FAILURE: boot_active did not deassert after verify_done (scenario 2)");
+            fail++;
+        end else begin
+            $display("PASS: boot_active correctly deasserted after verify_done (scenario 2)");
+        end
+
+        $display("==================================================");
         if (fail == 0)
-            $display("SUCCESS: all functional tests passed");
+            $display("SUCCESS: all functional tests passed (both scenarios)");
         else
-            $display("FAILURE: %0d test(s) failed", fail);
+            $display("FAILURE: %0d test(s) failed across both scenarios", fail);
 
         $finish;
     end
 
-    initial #200000000 begin
+    initial #400000000 begin
         $display("FAILURE: timeout waiting for verify_done");
         $finish;
     end
