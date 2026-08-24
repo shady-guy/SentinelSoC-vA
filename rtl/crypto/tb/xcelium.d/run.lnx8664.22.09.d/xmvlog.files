@@ -1,0 +1,24 @@
+//
+// File created by:  xrun
+// Do not modify this file
+//
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/SHA/sha512_pkg.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/ALU/pseudo_mersenne.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/ALU/multiplier.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/ALU/alu.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/ALU/alu_top.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/SHA/sha512_msg_sched.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/SHA/sha512_preprocessor.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/SHA/sha512_round.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/SHA/sha512_top.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/ed/reg_file.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/ed/micro_seq.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/ed/master_fsm.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/ed/top_ed25519.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/top_most.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/tb/rfc8032_vectors_pkg.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/tb/csr_if.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/tb/otp_if.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/tb/probe_if.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/tb/tb_pkg.sv
+/home/ed25519/project/SentinelSoC-vA/rtl/crypto/tb/tb_top.sv

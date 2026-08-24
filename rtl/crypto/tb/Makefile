@@ -9,7 +9,7 @@
 UVM_HOME  ?= $(CDS_INST_DIR)/tools/methodology/UVM/CDNS-1.1d/sv
 COV_TEST  := tb_test_cov
 
-XRUN_COMMON = -uvm -uvmhome $(UVM_HOME) \
+XRUN_COMMON = -uvm -uvmhome $(UVM_HOME) -uvmnocdnsextra \
               -access +rwc \
               -f files.f
 

@@ -26,9 +26,11 @@ interface otp_if (input logic clk, input logic rst_n);
 
   // Called by the sequence/test to load the pubkey for the vector under
   // test before CTRL.start is written.
+  // Same convention as R_IN/S_IN/DATA_IN (see csr_seq_lib.sv pack_word):
+  // first octet of each chunk goes in the word's most-significant byte.
   function automatic void load_pubkey(input byte unsigned pk[32]);
     for (int i = 0; i < 8; i++) begin
-      pubkey_words[i] = {pk[4*i+3], pk[4*i+2], pk[4*i+1], pk[4*i]};
+      pubkey_words[i] = {pk[4*i], pk[4*i+1], pk[4*i+2], pk[4*i+3]};
     end
   endfunction
 

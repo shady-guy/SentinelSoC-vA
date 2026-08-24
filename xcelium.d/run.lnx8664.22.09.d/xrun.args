@@ -1,0 +1,11 @@
+//
+// File created by:  xrun
+// Do not modify this file
+//
+-uvm
+-f
+rtl/crypto/files.f
+-access
++rwc
+-top
+tb_top_most_firmware

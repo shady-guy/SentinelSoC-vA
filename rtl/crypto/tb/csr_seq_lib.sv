@@ -29,8 +29,8 @@ class csr_base_seq extends uvm_sequence #(csr_seq_item);
     csr_seq_item item = csr_seq_item::type_id::create("wr_item");
     start_item(item);
     void'(item.randomize() with { kind == csr_seq_item::CSR_WRITE;
-                                   local::addr  == addr;
-                                   local::wdata == data; });
+                                   local::addr == addr;
+                                   wdata       == data; });
     finish_item(item);
   endtask
 
@@ -75,8 +75,16 @@ class csr_base_seq extends uvm_sequence #(csr_seq_item);
     end while (status[0]);
   endtask
 
+  // NOTE: this was flipped from an earlier version. top_most's R_IN/S_IN/
+  // DATA_IN capture applies one byte-swap, and sha512_msg_sched applies a
+  // second byte-swap on its own capture -- the two cancel out exactly, so
+  // whatever byte order is written on the CSR bus lands UNCHANGED in the
+  // SHA message schedule. For that to be correct SHA-512 input (and for
+  // r_reg/s_reg/pubkey_reg to land as the correct little-endian 256-bit
+  // integers the Ed25519 ALU expects), the first octet of each 4-byte
+  // chunk must be the CSR word's most-significant byte.
   function bit [31:0] pack_word(byte unsigned b[], int base_idx);
-    return {b[base_idx+3], b[base_idx+2], b[base_idx+1], b[base_idx]};
+    return {b[base_idx], b[base_idx+1], b[base_idx+2], b[base_idx+3]};
   endfunction
 
 endclass : csr_base_seq

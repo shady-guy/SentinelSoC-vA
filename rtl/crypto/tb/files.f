@@ -8,7 +8,7 @@
 ../ALU/alu.sv
 ../ALU/alu_top.sv
 ../SHA/sha512_msg_sched.sv
-../SHA/sha512_padder.sv
+../SHA/sha512_preprocessor.sv
 ../SHA/sha512_round.sv
 ../SHA/sha512_top.sv
 ../ed/reg_file.sv

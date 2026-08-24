@@ -59,6 +59,21 @@ module tb_top;
   assign u_probe_if.fsm_state = dut.state;
 
   //---------------------------------------------------------------
+  // DEBUG ONLY -- dumps internal captured registers so you can diff
+  // them against known-good RFC 8032 values by hand. Remove once the
+  // TEST1 mismatch is root-caused.
+  //---------------------------------------------------------------
+  always @(dut.state) begin
+    if (dut.state == dut.ST_WAIT_INTR)
+      $display("[DBG %0t] entering ST_WAIT_INTR: r_reg=%h s_reg=%h pubkey_reg=%h sha_len_reg=%0d sha_fed=%0d",
+                $time, dut.r_reg, dut.s_reg, dut.pubkey_reg, dut.sha_len_reg, dut.sha_fed);
+    if (dut.state == dut.ST_LOAD_REGS)
+      $display("[DBG %0t] entering ST_LOAD_REGS: hash_reg=%h", $time, dut.hash_reg);
+    if (dut.state == dut.ST_DONE)
+      $display("[DBG %0t] ST_DONE: signature_valid_o=%b", $time, u_csr_if.signature_valid);
+  end
+
+  //---------------------------------------------------------------
   // UVM hookup
   //---------------------------------------------------------------
   initial begin

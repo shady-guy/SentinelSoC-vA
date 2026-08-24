@@ -1,0 +1,20 @@
+//
+// File created by:  xrun
+// Do not modify this file
+//
+-uvm
+-uvmhome
+/home/install/XCELIUM2209/tools.lnx86/methodology/UVM/CDNS-1.1d/sv
+-uvmnocdnsextra
+-access
++rwc
+-f
+files.f
+-coverage
+all
+-covoverwrite
+-covtest
+tb_test_cov
++UVM_TESTNAME=tb_test
++UVM_VERBOSITY=UVM_LOW
++DUMP_WAVES
