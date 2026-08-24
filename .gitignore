@@ -19,6 +19,12 @@ sw/**/*.map
 
 .bender/
 
-xcelium.*
-*.history
+xcelium.d/*
 
+*.shm
+*.history
+*.log
+*.d
+*.key
+*.ucm
+*.ucd
