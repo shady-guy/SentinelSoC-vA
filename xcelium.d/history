@@ -79,3 +79,4 @@ s74::(26Jul2026:19:01:12):( xrun -f rtl/crypto/files.f -access +rwc -top tb_top_
 s75::(26Jul2026:19:02:23):( xrun -f rtl/crypto/files.f -access +rwc -top tb_top_most_firmware )
 s76::(22Aug2026:15:50:23):( xrun -f rtl/crypto/files.f -access +rwc -top tb_top_most_firmware )
 s77::(22Aug2026:15:51:45):( xrun -uvm -f rtl/crypto/files.f -access +rwc -top tb_top_most_firmware )
+s78::(25Aug2026:02:49:29):( xrun -f rtl/crypto/files.f -access +rwc -top tb_top_most_firmware )

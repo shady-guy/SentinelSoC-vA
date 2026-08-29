@@ -109,6 +109,15 @@ class rfc8032_kat_seq extends csr_base_seq;
     int unsigned n_words;
     int unsigned msg_len_words;
 
+    // top_most's FSM has no self-transition out of ST_DONE -- it stays
+    // there until CTRL.abort/CTRL.softrst forces it back to ST_IDLE.
+    // Force a clean IDLE state before every KAT run, otherwise a second
+    // (or later) test in the same sim silently no-ops: CTRL.start is
+    // only honored from ST_IDLE, so without this the DUT just keeps
+    // reporting the PREVIOUS test's stale signature_valid_o.
+    write_reg(`CTRL_OFF, 32'h4); // soft-reset
+    wait_idle();
+
     // OTP must be loaded before the DUT reaches ST_OTP_REQ.
     otp_vif.load_pubkey(vec.pubkey_bytes);
 
@@ -210,35 +219,51 @@ class top_virtual_seq extends uvm_sequence #(csr_seq_item);
   `uvm_object_utils(top_virtual_seq)
   `uvm_declare_p_sequencer(csr_sequencer)
 
+  virtual reset_if rst_vif;
+
   function new(string name = "top_virtual_seq");
     super.new(name);
   endfunction
+
+  task pre_body();
+    if (!uvm_config_db#(virtual reset_if)::get(null, "*", "rst_vif", rst_vif))
+      `uvm_fatal("TOP_VSEQ", "virtual reset_if not set in config_db")
+  endtask
 
   task body();
     rfc8032_kat_seq kat;
     abort_seq       ab;
 
+    // top_most is a boot-time-only design (verifies once per reset cycle,
+    // per its own "no retry semantics needed" comment) -- reset before
+    // every scenario so no state survives from the previous one.
+
     // 1) TEST 1 -- expect verified
+    rst_vif.do_reset();
     kat = rfc8032_kat_seq::type_id::create("kat_test1");
     kat.vec = rfc8032_vectors_pkg::get_test1();
     kat.start(p_sequencer);
 
     // 2) TEST 1 with corrupted S -- expect unverified
+    rst_vif.do_reset();
     kat = rfc8032_kat_seq::type_id::create("kat_test1_bad");
     kat.vec = rfc8032_vectors_pkg::get_test1_bad_sig();
     kat.start(p_sequencer);
 
     // 3) TEST SHA(abc) -- expect verified, exercises multi-block SHA path
+    rst_vif.do_reset();
     kat = rfc8032_kat_seq::type_id::create("kat_test_sha_abc");
     kat.vec = rfc8032_vectors_pkg::get_test_sha_abc();
     kat.start(p_sequencer);
 
     // 4) mid-operation abort
+    rst_vif.do_reset();
     ab = abort_seq::type_id::create("abort_case");
     ab.use_softrst = 1'b0;
     ab.start(p_sequencer);
 
     // 5) mid-operation soft-reset
+    rst_vif.do_reset();
     ab = abort_seq::type_id::create("softrst_case");
     ab.use_softrst = 1'b1;
     ab.start(p_sequencer);

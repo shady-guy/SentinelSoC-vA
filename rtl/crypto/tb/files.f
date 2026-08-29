@@ -27,5 +27,6 @@ rfc8032_vectors_pkg.sv
 csr_if.sv
 otp_if.sv
 probe_if.sv
+reset_if.sv
 tb_pkg.sv
 tb_top.sv
